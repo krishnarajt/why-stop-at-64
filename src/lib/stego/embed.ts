@@ -1,4 +1,5 @@
 import { MAGIC_V1, MAGIC_V2, END_MARKER } from "./types";
+import { encrypt, decrypt } from "./encryption";
 
 /**
  * Find a byte sequence in a buffer, starting from `from`.
@@ -23,15 +24,13 @@ function findSequence(
 
 // --- Format-specific end-of-image finders ---
 
-/** GIF trailer: last 0x3B byte */
 function findGifEnd(bytes: Uint8Array): number {
   for (let i = bytes.length - 1; i >= 0; i--) {
-    if (bytes[i] === 0x3b) return i + 1; // include the trailer byte
+    if (bytes[i] === 0x3b) return i + 1;
   }
   return -1;
 }
 
-/** JPEG EOI marker: FF D9 (scan backwards for last occurrence) */
 function findJpegEnd(bytes: Uint8Array): number {
   for (let i = bytes.length - 2; i >= 0; i--) {
     if (bytes[i] === 0xff && bytes[i + 1] === 0xd9) return i + 2;
@@ -39,10 +38,8 @@ function findJpegEnd(bytes: Uint8Array): number {
   return -1;
 }
 
-/** PNG: find end of IEND chunk (IEND chunk = length(4) + "IEND"(4) + CRC(4) = 12 bytes after length field) */
 function findPngEnd(bytes: Uint8Array): number {
   const iend = new TextEncoder().encode("IEND");
-  // Search for "IEND" chunk type
   for (let i = 8; i < bytes.length - 7; i++) {
     if (
       bytes[i] === iend[0] &&
@@ -50,14 +47,12 @@ function findPngEnd(bytes: Uint8Array): number {
       bytes[i + 2] === iend[2] &&
       bytes[i + 3] === iend[3]
     ) {
-      // IEND chunk: 4 bytes type + 4 bytes CRC after type
       return i + 4 + 4; // type + CRC
     }
   }
   return -1;
 }
 
-/** WebP: RIFF container. Total file size = 8 + value at bytes[4..7] LE */
 function findWebpEnd(bytes: Uint8Array): number {
   if (bytes.length < 12) return -1;
   const riffSize =
@@ -71,29 +66,19 @@ export type ImageFormat = "gif" | "jpeg" | "png" | "webp";
 
 export function detectFormat(bytes: Uint8Array): ImageFormat | null {
   if (bytes.length < 12) return null;
-
-  // GIF: "GIF87a" or "GIF89a"
   if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "gif";
-
-  // PNG: 89 50 4E 47
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "png";
-
-  // JPEG: FF D8 FF
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpeg";
-
-  // WebP: "RIFF" + 4 bytes + "WEBP"
   if (
     bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
     bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
   ) return "webp";
-
   return null;
 }
 
 function findImageEnd(bytes: Uint8Array): number {
   const fmt = detectFormat(bytes);
   if (!fmt) return -1;
-
   switch (fmt) {
     case "gif": return findGifEnd(bytes);
     case "jpeg": return findJpegEnd(bytes);
@@ -109,22 +94,48 @@ export const MIME_TYPES: Record<ImageFormat, string> = {
   webp: "image/webp",
 };
 
-// --- Embed / Extract (format-agnostic) ---
+// --- Embed / Extract ---
 
 /**
- * Embed a serialized payload into an image after its end-of-image marker.
- * Works with GIF, JPEG, PNG, and WebP.
+ * Embed a serialized payload into an image.
+ *
+ * Without password (standard mode):
+ *   [IMAGE][MAGIC_V2][payload][END_MARKER]
+ *
+ * With password (deniable mode):
+ *   [IMAGE][encrypt(MAGIC_V2 + payload + END_MARKER)]
+ *   The encrypted blob is indistinguishable from random bytes.
  */
-export function embedInImage(
+export async function embedInImage(
   imageBytes: Uint8Array,
-  payload: Uint8Array
-): Uint8Array {
+  payload: Uint8Array,
+  password?: string
+): Promise<Uint8Array> {
   const endIndex = findImageEnd(imageBytes);
   if (endIndex === -1) {
     throw new Error("Unsupported or invalid image format");
   }
 
   const imagePart = imageBytes.slice(0, endIndex);
+
+  if (password) {
+    // Deniable mode: encrypt the entire envelope including magic and end marker
+    const envelope = new Uint8Array(
+      MAGIC_V2.length + payload.length + END_MARKER.length
+    );
+    envelope.set(MAGIC_V2, 0);
+    envelope.set(payload, MAGIC_V2.length);
+    envelope.set(END_MARKER, MAGIC_V2.length + payload.length);
+
+    const encrypted = await encrypt(envelope, password);
+
+    const result = new Uint8Array(imagePart.length + encrypted.length);
+    result.set(imagePart, 0);
+    result.set(encrypted, imagePart.length);
+    return result;
+  }
+
+  // Standard mode: plaintext magic + payload + end marker
   const result = new Uint8Array(
     imagePart.length + MAGIC_V2.length + payload.length + END_MARKER.length
   );
@@ -138,14 +149,24 @@ export function embedInImage(
   return result;
 }
 
+export type ExtractResult = {
+  version: number; // 1 = legacy, 2 = standard V2, 3 = deniable
+  payload: Uint8Array;
+};
+
 /**
- * Extract the raw payload from an image. Tries V2 first, then V1 fallback.
- * Works with any format — just searches for magic bytes.
+ * Extract the raw payload from an image.
+ *
+ * Returns:
+ *   version 2: found MAGIC_V2 in plaintext (standard or legacy encrypted)
+ *   version 3: data after image end with no magic (deniable — needs decryption)
+ *   version 1: found MAGIC_V1 (legacy)
+ *   null: no payload found
  */
 export function extractFromImage(
   imageBytes: Uint8Array
-): { version: number; payload: Uint8Array } | null {
-  // Try V2 first
+): ExtractResult | null {
+  // Try V2 first — plaintext magic bytes
   let magicIndex = findSequence(imageBytes, MAGIC_V2, 0);
   if (magicIndex !== -1) {
     const payloadStart = magicIndex + MAGIC_V2.length;
@@ -171,10 +192,51 @@ export function extractFromImage(
     }
   }
 
+  // Deniable: check for data after image end marker
+  const imageEnd = findImageEnd(imageBytes);
+  if (imageEnd !== -1 && imageEnd < imageBytes.length) {
+    const trailing = imageBytes.slice(imageEnd);
+    // Must be at least salt(16) + iv(12) + some ciphertext
+    if (trailing.length > 28) {
+      return {
+        version: 3,
+        payload: trailing,
+      };
+    }
+  }
+
   return null;
 }
 
-// --- Legacy aliases for backward compatibility ---
+/**
+ * Decrypt a deniable (version 3) payload.
+ * Returns the inner serialized payload (without MAGIC_V2 and END_MARKER),
+ * or null if decryption fails (wrong password or not actually deniable data).
+ */
+export async function decryptDeniable(
+  encryptedBlob: Uint8Array,
+  password: string
+): Promise<Uint8Array | null> {
+  try {
+    const decrypted = new Uint8Array(await decrypt(encryptedBlob, password));
 
+    // Verify decrypted content starts with MAGIC_V2
+    if (decrypted.length < MAGIC_V2.length + END_MARKER.length) return null;
+    for (let i = 0; i < MAGIC_V2.length; i++) {
+      if (decrypted[i] !== MAGIC_V2[i]) return null;
+    }
+
+    // Strip MAGIC_V2 prefix and END_MARKER suffix
+    const inner = decrypted.slice(MAGIC_V2.length);
+    const endIdx = findSequence(inner, END_MARKER, 0);
+    if (endIdx === -1) return null;
+
+    return inner.slice(0, endIdx);
+  } catch {
+    return null; // Wrong password or corrupt data
+  }
+}
+
+// Legacy aliases
 export const embedInGif = embedInImage;
 export const extractFromGif = extractFromImage;

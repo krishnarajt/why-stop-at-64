@@ -3,6 +3,7 @@
 import type { ProgressStage } from "@/lib/stego";
 
 const ENCODE_STAGES: ProgressStage[] = [
+  "bundling",
   "compressing",
   "encrypting",
   "embedding",
@@ -12,17 +13,20 @@ const DECODE_STAGES: ProgressStage[] = [
   "extracting",
   "decrypting",
   "decompressing",
+  "unbundling",
   "done",
 ];
 
 const LABELS: Record<ProgressStage, string> = {
+  bundling: "Bundling files",
   compressing: "Compressing (Zstd)",
   encrypting: "Encrypting (AES-256)",
-  embedding: "Embedding in GIF",
+  embedding: "Embedding in image",
   "encoding-text": "Encoding text",
   decrypting: "Decrypting",
   decompressing: "Decompressing (Zstd)",
   extracting: "Extracting payload",
+  unbundling: "Unpacking files",
   done: "Done",
 };
 
@@ -45,6 +49,9 @@ export default function ProgressBar({
     if (s === "encrypting" && !hasPassword) return false;
     if (s === "decrypting" && !hasPassword) return false;
     if (s === "encoding-text" && mode === "decode") return false;
+    // bundling/unbundling only show if that stage is the current stage
+    if (s === "bundling" && stage !== "bundling") return false;
+    if (s === "unbundling" && stage !== "unbundling") return false;
     return true;
   });
 

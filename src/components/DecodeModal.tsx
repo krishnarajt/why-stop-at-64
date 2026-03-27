@@ -3,6 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import { decode, decodeFromText, isEncrypted, isTextEncryptedCheck } from "@/lib/stego/client";
 import type { ProgressStage } from "@/lib/stego/types";
+import type { DecodeResult } from "@/lib/stego/client";
+import { zipSync } from "fflate";
 import ProgressBar from "./ProgressBar";
 
 interface DecodeModalProps {
@@ -25,6 +27,30 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
 
   const onProgress = (s: ProgressStage) => setStage(s);
 
+  function handleDecodeResult(result: DecodeResult | null) {
+    if (!result) {
+      setStatus("Nothing here. Try a different image.");
+      setStage(null);
+      return;
+    }
+
+    setStage("done");
+
+    if (result.files) {
+      // Multi-file: zip and download
+      const zipData: Record<string, Uint8Array> = {};
+      for (const f of result.files) {
+        zipData[f.path] = f.data;
+      }
+      const zipped = zipSync(zipData);
+      downloadResult(zipped, "extracted-files.zip");
+      setStatus(`Extracted: ${result.files.length} files (downloaded as ZIP)`);
+    } else if (result.data && result.fileName) {
+      downloadResult(result.data, result.fileName);
+      setStatus(`Extracted: ${result.fileName}`);
+    }
+  }
+
   async function handleFile(file: File) {
     setProcessing(true);
     setStatus("");
@@ -45,15 +71,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
       }
 
       const result = await decode(bytes, undefined, onProgress);
-      if (!result) {
-        setStatus("Nothing here. Try a different image.");
-        setStage(null);
-        return;
-      }
-
-      setStage("done");
-      downloadResult(result.data, result.fileName);
-      setStatus(`Extracted: ${result.fileName}`);
+      handleDecodeResult(result);
     } catch {
       setStatus("Something went wrong. Try again.");
       setStage(null);
@@ -85,9 +103,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
       setStatus("");
 
       const result = await decodeFromText(text, undefined, onProgress);
-      setStage("done");
-      downloadResult(result.data, result.fileName);
-      setStatus(`Extracted: ${result.fileName}`);
+      handleDecodeResult(result);
     } catch {
       setStatus("Invalid text. Make sure you copied the full string.");
       setStage(null);
@@ -109,19 +125,10 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
     try {
       if (pendingFile) {
         const result = await decode(pendingFile, password, onProgress);
-        if (!result) {
-          setStatus("Decryption failed. Wrong password?");
-          setProcessing(false);
-          return;
-        }
-        setStage("done");
-        downloadResult(result.data, result.fileName);
-        setStatus(`Extracted: ${result.fileName}`);
+        handleDecodeResult(result);
       } else if (pendingText) {
         const result = await decodeFromText(pendingText, password, onProgress);
-        setStage("done");
-        downloadResult(result.data, result.fileName);
-        setStatus(`Extracted: ${result.fileName}`);
+        handleDecodeResult(result);
       }
 
       setNeedsPassword(false);
@@ -158,6 +165,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
     setDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) handleFile(file);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -189,7 +197,6 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
         </div>
 
         {needsPassword ? (
-          /* Password prompt */
           <div>
             <p className="text-zinc-400 text-sm mb-3">
               This payload is encrypted.
@@ -223,7 +230,6 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
           </div>
         ) : (
           <>
-            {/* Mode toggle */}
             <div className="flex gap-1 p-1 bg-zinc-800 rounded-lg mb-4">
               <button
                 onClick={() => { setMode("file"); setStatus(""); setStage(null); }}
@@ -257,6 +263,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
                   <input
                     ref={fileInputRef}
                     type="file"
+                    accept="image/gif,image/png,image/jpeg,image/webp"
                     className="hidden"
                     onChange={handleInputChange}
                   />

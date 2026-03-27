@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { encode, encodeToText } from "@/lib/stego/client";
+import { encode, encodeMulti, encodeToText, encodeMultiToText } from "@/lib/stego/client";
 import type { ProgressStage } from "@/lib/stego/types";
+import type { ContainerFile } from "@/lib/stego/container";
 import ProgressBar from "./ProgressBar";
 import QRCode from "qrcode";
 
@@ -18,6 +19,7 @@ export default function EncodeModal({
   onClose,
 }: EncodeModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string>("");
   const [processing, setProcessing] = useState(false);
   const [textOutput, setTextOutput] = useState<string>("");
@@ -26,22 +28,28 @@ export default function EncodeModal({
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [stage, setStage] = useState<ProgressStage | null>(null);
-  const [lastFileBytes, setLastFileBytes] = useState<Uint8Array | null>(null);
-  const [lastFileName, setLastFileName] = useState<string>("");
-  const [lastPassword, setLastPassword] = useState<string | undefined>();
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [qrProcessing, setQrProcessing] = useState(false);
   const [qrError, setQrError] = useState<string>("");
+  // For text generation after encode
+  const [lastContainerFiles, setLastContainerFiles] = useState<ContainerFile[] | null>(null);
+  const [lastSingleFile, setLastSingleFile] = useState<{ bytes: Uint8Array; name: string } | null>(null);
+  const [lastPassword, setLastPassword] = useState<string | undefined>();
 
-  // QR codes can hold ~2953 bytes; Base32768 chars are 2-3 bytes in UTF-8.
-  // Conservative limit: ~1200 chars of Base32768 text ≈ ~2.5KB UTF-8.
   const QR_TEXT_LIMIT = 1200;
 
+  const totalSize = selectedFiles.reduce((s, f) => s + f.size, 0);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setSelectedFiles(Array.from(files));
+  }
+
   async function handleEncode() {
-    const file = selectedFile || fileInputRef.current?.files?.[0];
-    if (!file) {
-      setStatus("Select a file first.");
+    if (selectedFiles.length === 0) {
+      setStatus("Select files first.");
       return;
     }
 
@@ -53,22 +61,37 @@ export default function EncodeModal({
     setStage(null);
 
     try {
-      const [imageBuffer, fileBuffer] = await Promise.all([
-        fetch(imageUrl).then((r) => r.arrayBuffer()),
-        file.arrayBuffer(),
-      ]);
-
+      const imageBuffer = await fetch(imageUrl).then((r) => r.arrayBuffer());
       const imageBytes = new Uint8Array(imageBuffer);
-      const fileBytes = new Uint8Array(fileBuffer);
       const pw = password || undefined;
-
       const onProgress = (s: ProgressStage) => setStage(s);
 
-      const result = await encode(imageBytes, fileBytes, file.name, pw, onProgress);
+      let result: Uint8Array;
+      let originalSize: number;
+
+      if (selectedFiles.length === 1) {
+        // Single file — use simple encode
+        const file = selectedFiles[0];
+        const fileBytes = new Uint8Array(await file.arrayBuffer());
+        result = await encode(imageBytes, fileBytes, file.name, pw, onProgress);
+        originalSize = fileBytes.length;
+        setLastSingleFile({ bytes: fileBytes, name: file.name });
+        setLastContainerFiles(null);
+      } else {
+        // Multi-file — bundle into container
+        const containerFiles: ContainerFile[] = await Promise.all(
+          selectedFiles.map(async (f) => ({
+            path: f.webkitRelativePath || f.name,
+            data: new Uint8Array(await f.arrayBuffer()),
+          }))
+        );
+        result = await encodeMulti(imageBytes, containerFiles, pw, onProgress);
+        originalSize = containerFiles.reduce((s, f) => s + f.data.length, 0);
+        setLastContainerFiles(containerFiles);
+        setLastSingleFile(null);
+      }
 
       setStage("done");
-      setLastFileBytes(fileBytes);
-      setLastFileName(file.name);
       setLastPassword(pw);
 
       // Download the image
@@ -83,9 +106,12 @@ export default function EncodeModal({
       URL.revokeObjectURL(url);
 
       const payloadSize = result.length - imageBytes.length;
-      const ratio = ((payloadSize / fileBytes.length) * 100).toFixed(0);
+      const ratio = ((payloadSize / originalSize) * 100).toFixed(0);
+      const fileLabel = selectedFiles.length === 1
+        ? ""
+        : ` (${selectedFiles.length} files)`;
       setStatus(
-        `Done${pw ? " (encrypted)" : ""}. Original: ${formatSize(fileBytes.length)} → Payload: ${formatSize(payloadSize)} (${ratio}% of original)`
+        `Done${pw ? " (encrypted, deniable)" : ""}${fileLabel}. Original: ${formatSize(originalSize)} → Payload: ${formatSize(payloadSize)} (${ratio}% of original)`
       );
     } catch {
       setStatus("Something went wrong. Try again.");
@@ -96,10 +122,16 @@ export default function EncodeModal({
   }
 
   async function handleGenerateText() {
-    if (!lastFileBytes) return;
     setTextProcessing(true);
     try {
-      const text = await encodeToText(lastFileBytes, lastFileName, lastPassword);
+      let text: string;
+      if (lastContainerFiles) {
+        text = await encodeMultiToText(lastContainerFiles, lastPassword);
+      } else if (lastSingleFile) {
+        text = await encodeToText(lastSingleFile.bytes, lastSingleFile.name, lastPassword);
+      } else {
+        return;
+      }
       setTextOutput(text);
     } catch {
       setStatus("Failed to generate text version.");
@@ -123,7 +155,7 @@ export default function EncodeModal({
         errorCorrectionLevel: "L",
         margin: 2,
         width: 300,
-        color: { dark: "#e4e4e7", light: "#18181b" }, // zinc-200 on zinc-900
+        color: { dark: "#e4e4e7", light: "#18181b" },
       });
       setQrDataUrl(dataUrl);
     } catch {
@@ -152,31 +184,63 @@ export default function EncodeModal({
         </div>
 
         <p className="text-zinc-400 text-sm mb-4">
-          Select a file. It will be compressed and bundled with{" "}
+          Select files or a folder. They will be compressed and bundled with{" "}
           <span className="text-white font-mono">{imageName}</span>.
         </p>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-          className="w-full text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer mb-3"
-        />
+        {/* File and folder inputs */}
+        <div className="flex gap-2 mb-3">
+          <label className="flex-1 cursor-pointer text-center py-2 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-sm font-medium transition-colors">
+            Files
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </label>
+          <label className="flex-1 cursor-pointer text-center py-2 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-sm font-medium transition-colors">
+            Folder
+            <input
+              ref={folderInputRef}
+              type="file"
+              /* @ts-expect-error webkitdirectory is non-standard but widely supported */
+              webkitdirectory=""
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </label>
+        </div>
 
         {/* Capacity indicator */}
-        {selectedFile && !processing && stage !== "done" && (
+        {selectedFiles.length > 0 && !processing && stage !== "done" && (
           <div className="mb-3 px-3 py-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
             <div className="flex items-center justify-between text-xs">
               <span className="text-zinc-400">
-                {selectedFile.name}
+                {selectedFiles.length === 1
+                  ? selectedFiles[0].name
+                  : `${selectedFiles.length} files`}
               </span>
               <span className="text-zinc-500 font-mono">
-                {formatSize(selectedFile.size)}
+                {formatSize(totalSize)}
               </span>
             </div>
+            {selectedFiles.length > 1 && (
+              <div className="mt-1 text-[10px] text-zinc-600 max-h-16 overflow-y-auto">
+                {selectedFiles.slice(0, 10).map((f, i) => (
+                  <div key={i} className="truncate">
+                    {f.webkitRelativePath || f.name}
+                  </div>
+                ))}
+                {selectedFiles.length > 10 && (
+                  <div>...and {selectedFiles.length - 10} more</div>
+                )}
+              </div>
+            )}
             <div className="mt-1 text-[11px] text-zinc-500">
-              Estimated payload: ~{formatSize(estimatePayload(selectedFile.size))}
-              {password && " + encryption overhead"}
+              Estimated payload: ~{formatSize(estimatePayload(totalSize))}
+              {password && " (encrypted, deniable)"}
             </div>
           </div>
         )}
@@ -189,7 +253,7 @@ export default function EncodeModal({
             </label>
             {password && (
               <span className="text-[10px] text-emerald-400 font-medium">
-                AES-256 encryption on
+                AES-256 + deniable
               </span>
             )}
           </div>
@@ -236,7 +300,7 @@ export default function EncodeModal({
         )}
 
         {/* Text version: generate on demand */}
-        {!processing && stage === "done" && !textOutput && (
+        {!processing && stage === "done" && !textOutput && (lastSingleFile || lastContainerFiles) && (
           <button
             onClick={handleGenerateText}
             disabled={textProcessing}
@@ -269,7 +333,6 @@ export default function EncodeModal({
               className="w-full h-28 bg-zinc-800 border border-zinc-700 rounded-lg p-3 text-xs text-zinc-300 font-mono resize-none focus:outline-none focus:border-zinc-500"
             />
 
-            {/* QR code output for small payloads */}
             {textOutput.length <= QR_TEXT_LIMIT && !qrDataUrl && (
               <button
                 onClick={handleGenerateQR}
@@ -319,11 +382,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Conservative estimate: zstd typically achieves 50-85% compression. Use 50% as a middle estimate. */
 function estimatePayload(fileSize: number): number {
-  // Header overhead: ~15 bytes (flags + size + name length + short name)
   const headerOverhead = 15;
-  // Zstd at level 19 typically compresses to 15-50% of original; use 40% as conservative estimate
   const compressedSize = Math.ceil(fileSize * 0.4);
   return headerOverhead + compressedSize;
 }

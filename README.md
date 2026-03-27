@@ -35,19 +35,27 @@ Before doing anything else, we compress the file using [Zstandard (zstd)](https:
 
 Legacy payloads compressed with the original DEFLATE pipeline (via [fflate](https://github.com/101arrowz/fflate)) are still supported for decoding. The FLAGS byte distinguishes between the two: `FLAG_ZSTD` (bit 2) for new payloads, `FLAG_COMPRESSED` (bit 0) for legacy DEFLATE.
 
-### Stage 2: Encryption (AES-256-GCM, optional)
+### Stage 2: Encryption & Plausible Deniability (AES-256-GCM, optional)
 
-If the user provides a password, the compressed data is encrypted using AES-256-GCM via the Web Crypto API — no additional dependencies needed, it's built into every modern browser.
+If the user provides a password, the payload is encrypted using AES-256-GCM via the Web Crypto API — no additional dependencies needed, it's built into every modern browser.
 
 The process:
 1. A random 16-byte salt is generated.
 2. The password is run through PBKDF2 (100,000 iterations, SHA-256) with the salt to derive a 256-bit AES key. PBKDF2's high iteration count makes brute-force attacks on weak passwords computationally expensive.
 3. A random 12-byte IV (initialization vector) is generated.
-4. The compressed data is encrypted with AES-256-GCM, which provides both confidentiality and authentication — if even one bit is tampered with, decryption fails entirely.
+4. The data is encrypted with AES-256-GCM, which provides both confidentiality and authentication — if even one bit is tampered with, decryption fails entirely.
 
 The encrypted output is stored as `[salt][iv][ciphertext]`. The salt and IV are not secret; they just need to be unique per encryption. The password never leaves the browser.
 
-The FLAGS byte in the binary header records whether encryption was applied (bit 1). On decode, the system checks this flag: if set, it prompts for a password before attempting decryption. If the wrong password is entered, AES-GCM's authentication tag check fails immediately — there's no silent corruption, just a clear "wrong password" error.
+**Plausible deniability**: Unlike typical steganography tools that leave identifiable markers in the file, this system encrypts the **entire envelope** — including the `STEG_V2\0` magic bytes and `\0STEG_END` marker — not just the data inside it. When a password is provided, the bytes appended after the image's end marker are:
+
+```
+[SALT: 16 bytes][IV: 12 bytes][AES-GCM ciphertext of (MAGIC + payload + END_MARKER)]
+```
+
+Without the password, this is indistinguishable from random noise. There are no magic bytes, no recognizable headers, no structural patterns — just 28 bytes of salt/IV (which look random) followed by ciphertext (which is random). A hex editor reveals nothing. Even if someone suspects steganography, they cannot prove data is hidden without the password. AES-GCM's authentication tag ensures that attempting decryption with the wrong password fails immediately rather than producing garbage that might hint at the structure.
+
+When no password is provided, the standard format with plaintext magic bytes is used (the payload needs to be discoverable without a key). If the wrong password is entered, AES-GCM's authentication tag check fails immediately — there's no silent corruption, just a clear "wrong password" error.
 
 Encryption is entirely optional. If no password is provided, this stage is skipped and the pipeline behaves exactly as it would without it.
 
@@ -64,7 +72,9 @@ We dropped Base64 entirely and store raw compressed (and optionally encrypted) b
 | PNG | End of IEND chunk | Find `IEND` chunk + 4-byte CRC |
 | WebP | End of RIFF container | Read 4-byte LE size at offset 4 |
 
-The V2 binary format appended after the image's end marker:
+The embed layer supports two modes:
+
+**Standard mode** (no password) — plaintext magic bytes for easy extraction:
 
 ```
 [Original image bytes, including end marker]
@@ -73,11 +83,20 @@ The V2 binary format appended after the image's end marker:
 [ORIGINAL_SIZE: 4 bytes LE]     ← enables buffer pre-allocation on decode
 [FILENAME_LEN: 2 bytes LE]      ← explicit length, not null-terminated
 [FILENAME: N bytes UTF-8]
-[DATA: raw bytes]               ← compressed, optionally encrypted
+[DATA: raw bytes]               ← compressed
 [END MARKER: "\0STEG_END"]     ← 8 bytes
 ```
 
-All four formats tolerate trailing bytes — image viewers, browsers, and messaging apps ignore everything after the end marker and display the image normally. Extraction just searches for `STEG_V2\0` magic bytes regardless of carrier format.
+**Deniable mode** (with password) — the entire envelope is encrypted:
+
+```
+[Original image bytes, including end marker]
+[SALT: 16 bytes]                ← random, for PBKDF2 key derivation
+[IV: 12 bytes]                  ← random, for AES-GCM
+[AES-GCM ciphertext]            ← encrypted(MAGIC + FLAGS + SIZE + NAME + DATA + END_MARKER)
+```
+
+All four formats tolerate trailing bytes — image viewers, browsers, and messaging apps ignore everything after the end marker and display the image normally. In standard mode, extraction searches for `STEG_V2\0` magic bytes. In deniable mode, the decoder detects trailing data after the image end, attempts decryption, and verifies the decrypted content starts with the magic bytes.
 
 Compared to V1 (Base64): a 1MB file used to become ~1.33MB of payload. Now it compresses to ~200-600KB of payload depending on content. That's a 2-6x improvement.
 
@@ -131,17 +150,35 @@ For the GIF embedding, raw bytes are optimal — there's no text constraint, so 
 
 For text sharing, you *need* an encoding because the transport is text. You can't paste raw bytes into WhatsApp. The question is just which encoding, and Base32768 is the practical ceiling: maximum density within characters that survive real-world copy-paste.
 
+### Multi-File Support
+
+You can hide multiple files — or an entire folder — inside a single image. When more than one file is selected, they are bundled into a binary container before compression:
+
+```
+[MAGIC: "MF\x01\x00"]          ← 4 bytes, container format v1
+[FILE_COUNT: 4 bytes LE]
+For each file:
+  [PATH_LEN: 2 bytes LE]
+  [PATH: N bytes UTF-8]         ← relative path (e.g. "src/index.ts")
+  [DATA_LEN: 4 bytes LE]
+  [DATA: M bytes]               ← raw file bytes
+```
+
+The container is stored with a sentinel filename (`.stego-archive`). On decode, if the system detects this sentinel, it unpacks the container and downloads all files as a ZIP archive using `fflate.zipSync()` — the same library already used for legacy DEFLATE decompression, so there's no additional dependency.
+
+Folder uploads preserve relative paths via the browser's `webkitRelativePath` API. Single-file uploads skip the container entirely and use the existing format unchanged — no overhead for the common case.
+
 ## How to Use
 
-### Hiding a file inside an image
+### Hiding files inside an image
 
 1. Open the site at [http://localhost:3000](http://localhost:3000).
 2. Browse the image collection and find one you like. The collection includes GIFs, PNGs, JPEGs, and WebPs.
 3. **Triple-click the top-left corner** of any image card (within the first 40x40 pixels). This is intentionally hidden — there's no visible button.
 4. The **Attach** modal opens.
-5. Click the file input and select any file you want to hide. A **capacity indicator** will show the file size and estimated compressed payload size so you know what to expect before encoding.
-6. **(Optional)** Enter a password in the password field. If provided, the file will be encrypted with AES-256-GCM before embedding. Leave it blank for no encryption.
-7. Click **Download**. The image will download to your computer with the file hidden inside. It still looks and works like a normal image — image viewers, browsers, and messaging apps will display it normally.
+5. Click **Files** to select one or more files, or **Folder** to select an entire directory. A **capacity indicator** will show the file count, total size, and estimated compressed payload size.
+6. **(Optional)** Enter a password in the password field. If provided, the entire payload will be encrypted with AES-256-GCM with **plausible deniability** — the output is indistinguishable from random noise without the password. Leave it blank for no encryption.
+7. Click **Download**. The image will download to your computer with the files hidden inside. It still looks and works like a normal image — image viewers, browsers, and messaging apps will display it normally.
 8. **(Optional)** After encoding completes, click **Generate text version** to produce a Base32768 Unicode string of the same file. Click **Copy** to copy it to your clipboard for sharing via text channels. This step is on-demand to keep the initial encode fast.
 9. **(Optional)** For small payloads (under ~1200 characters of text output), a **Generate QR code** button appears below the text. Click it to produce a scannable QR code containing the encoded data. The recipient scans it and pastes the result into the Paste Text tab to decode.
 
@@ -155,8 +192,8 @@ For text sharing, you *need* an encoding because the transport is text. You can'
 1. Select the **Image File** tab (default).
 2. Either drag and drop an image into the modal, or click **Choose File** to select one. Supports GIF, PNG, JPEG, and WebP.
 3. If the image has no hidden data, you'll see "Nothing here."
-4. If the image has hidden data and it's **not encrypted**, the hidden file downloads automatically.
-5. If the image has hidden data and it **is encrypted**, a password prompt appears. Enter the password that was used during encoding and click **Decrypt**. If the password is wrong, you'll see an error — AES-GCM doesn't silently produce garbage, it fails cleanly.
+4. If the image has hidden data and it's **not encrypted**, the hidden file downloads automatically. If multiple files were hidden, they download as a ZIP archive.
+5. If the image has hidden data and it **is encrypted** (or deniable), a password prompt appears. Enter the password that was used during encoding and click **Decrypt**. If the password is wrong, you'll see an error — AES-GCM doesn't silently produce garbage, it fails cleanly. For deniable payloads, a wrong password (or no password) simply shows "no hidden file found" — there's no way to tell that data is present.
 
 **From pasted text:**
 1. Select the **Paste Text** tab.
@@ -179,11 +216,12 @@ Everything is modular. Each concern lives in its own file and can be improved or
 
 ```
 src/lib/stego/
-  index.ts          ← Public API: encode, decode, encodeToText, decodeFromText
+  index.ts          ← Public API: encode, encodeMulti, decode, encodeToText, decodeFromText
   types.ts          ← Constants (magic bytes, flags) and shared types
+  container.ts      ← Multi-file container — bundle/unbundle files with paths
   compression.ts    ← compress/decompress — Zstd via WASM, with DEFLATE fallback for legacy
   encryption.ts     ← encrypt/decrypt — AES-256-GCM via Web Crypto API
-  embed.ts          ← Multi-format image embedding — GIF, PNG, JPEG, WebP
+  embed.ts          ← Multi-format image embedding + deniable encryption at embed layer
   format.ts         ← Binary format serialization — header layout, versioning
   reed-solomon.ts   ← Reed-Solomon error correction — GF(2^8), multi-block
   textcodec.ts      ← Unicode text encoding — Base32768 + RS error correction
@@ -195,14 +233,14 @@ All stego operations (compression, encryption, embedding, text encoding) run in 
 
 Want better compression? Replace `compression.ts`. Want a different text encoding? Replace `textcodec.ts`. Want to support more image formats? Add a new end-marker finder to `embed.ts`. Want a different encryption scheme? Replace `encryption.ts`. Want a different error correction code? Replace `reed-solomon.ts`. Nothing else changes.
 
-The decoder is backward-compatible: V1 (legacy Base64) GIFs and V2 DEFLATE-compressed GIFs still decode correctly alongside new Zstd-compressed payloads. All four carrier formats (GIF, PNG, JPEG, WebP) use the same payload format.
+The decoder is backward-compatible: V1 (legacy Base64) GIFs, V2 DEFLATE-compressed payloads, V2 format-level encrypted payloads, and V3 deniable payloads all decode correctly. All four carrier formats (GIF, PNG, JPEG, WebP) use the same payload format. Single-file and multi-file payloads are handled transparently.
 
 ## What We Could Still Do
 
 - **Chunked progress**: The progress bar currently jumps between pipeline stages because zstd compress/decompress is a single synchronous WASM call. Splitting large files into chunks and compressing each individually would allow reporting real percentage progress — more honest UX for multi-MB files.
-- **Multi-file support**: Tar-like bundling before compression — hide a whole folder in one image. The format already has a filename field; you'd just need a file-count header and repeat the name+data blocks.
-- **Plausible deniability**: The `STEG_V2\0` magic bytes are a dead giveaway if someone looks at the hex. Encrypting the entire payload including the header would make it indistinguishable from random trailing bytes without the password.
+- **Dictionary compression**: Zstd supports pre-trained dictionaries. If users frequently hide similar file types (e.g., JSON configs, source code), a shared dictionary could dramatically improve ratios on small files where zstd normally can't build good context.
 - **Streaming**: For very large files, streaming compression would reduce peak memory usage.
+- **WASM-based encryption**: The Web Crypto API forces async even for tiny payloads. A WASM AES-GCM implementation could be synchronous and faster for small data, though Web Crypto is hardware-accelerated on most platforms so it would only help at the margins.
 
 ## Running Locally
 

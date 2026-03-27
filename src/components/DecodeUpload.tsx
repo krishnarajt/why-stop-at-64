@@ -3,6 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import { decode, decodeFromText, isEncrypted, isTextEncryptedCheck } from "@/lib/stego/client";
 import type { ProgressStage } from "@/lib/stego/types";
+import type { DecodeResult } from "@/lib/stego/client";
+import { zipSync } from "fflate";
 import ProgressBar from "./ProgressBar";
 
 export default function DecodeUpload() {
@@ -33,6 +35,29 @@ export default function DecodeUpload() {
     URL.revokeObjectURL(url);
   }
 
+  function handleDecodeResult(result: DecodeResult | null) {
+    if (!result) {
+      setStatus("No hidden file found in this image.");
+      setStage(null);
+      return;
+    }
+
+    setStage("done");
+
+    if (result.files) {
+      const zipData: Record<string, Uint8Array> = {};
+      for (const f of result.files) {
+        zipData[f.path] = f.data;
+      }
+      const zipped = zipSync(zipData);
+      downloadResult(zipped, "extracted-files.zip");
+      setStatus(`Extracted: ${result.files.length} files (downloaded as ZIP)`);
+    } else if (result.data && result.fileName) {
+      downloadResult(result.data, result.fileName);
+      setStatus(`Extracted: ${result.fileName}`);
+    }
+  }
+
   async function handleDecode() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
@@ -59,15 +84,7 @@ export default function DecodeUpload() {
       }
 
       const result = await decode(bytes, undefined, onProgress);
-      if (!result) {
-        setStatus("No hidden file found in this image.");
-        setStage(null);
-        return;
-      }
-
-      setStage("done");
-      downloadResult(result.data, result.fileName);
-      setStatus(`Extracted: ${result.fileName}`);
+      handleDecodeResult(result);
     } catch (err) {
       setStatus(
         `Error: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -101,9 +118,7 @@ export default function DecodeUpload() {
       setStatus("");
 
       const result = await decodeFromText(text, undefined, onProgress);
-      setStage("done");
-      downloadResult(result.data, result.fileName);
-      setStatus(`Extracted: ${result.fileName}`);
+      handleDecodeResult(result);
     } catch {
       setStatus("Invalid text. Make sure you copied the full string.");
       setStage(null);
@@ -125,19 +140,10 @@ export default function DecodeUpload() {
     try {
       if (pendingFile) {
         const result = await decode(pendingFile, password, onProgress);
-        if (!result) {
-          setStatus("Decryption failed. Wrong password?");
-          setProcessing(false);
-          return;
-        }
-        setStage("done");
-        downloadResult(result.data, result.fileName);
-        setStatus(`Extracted: ${result.fileName}`);
+        handleDecodeResult(result);
       } else if (pendingText) {
         const result = await decodeFromText(pendingText, password, onProgress);
-        setStage("done");
-        downloadResult(result.data, result.fileName);
-        setStatus(`Extracted: ${result.fileName}`);
+        handleDecodeResult(result);
       }
 
       setNeedsPassword(false);
@@ -189,7 +195,6 @@ export default function DecodeUpload() {
       </p>
 
       {needsPassword ? (
-        /* Password prompt */
         <div className="max-w-sm mx-auto">
           <p className="text-zinc-400 text-sm mb-3">
             This payload is encrypted.
@@ -223,7 +228,6 @@ export default function DecodeUpload() {
         </div>
       ) : (
         <>
-          {/* Mode toggle */}
           <div className="flex gap-1 p-1 bg-zinc-800 rounded-lg mb-4 max-w-xs mx-auto">
             <button
               onClick={() => { setMode("file"); setStatus(""); setStage(null); }}

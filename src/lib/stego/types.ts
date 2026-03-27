@@ -14,6 +14,10 @@ export const FLAG_COMPRESSED = 0x01;
 export const FLAG_ENCRYPTED = 0x02;
 export const FLAG_ZSTD = 0x04;
 
+// Multi-file container
+export const CONTAINER_MAGIC = new Uint8Array([0x4d, 0x46, 0x01, 0x00]); // "MF\x01\x00"
+export const ARCHIVE_SENTINEL = ".stego-archive";
+
 export type ProgressStage =
   | "compressing"
   | "encrypting"
@@ -22,6 +26,14 @@ export type ProgressStage =
   | "decrypting"
   | "decompressing"
   | "extracting"
+  | "bundling"
+  | "unbundling"
   | "done";
 
 export type OnProgress = (stage: ProgressStage) => void;
+
+export interface DecodeResult {
+  fileName: string | null;
+  data: Uint8Array | null;
+  files: { path: string; data: Uint8Array }[] | null;
+}
