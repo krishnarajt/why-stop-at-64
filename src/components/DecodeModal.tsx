@@ -46,7 +46,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
 
       const result = await decode(bytes, undefined, onProgress);
       if (!result) {
-        setStatus("Nothing here. Try a different file.");
+        setStatus("Nothing here. Try a different image.");
         setStage(null);
         return;
       }
@@ -233,7 +233,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
                     : "text-zinc-400 hover:text-zinc-300"
                 }`}
               >
-                GIF File
+                Image File
               </button>
               <button
                 onClick={() => { setMode("text"); setStatus(""); setStage(null); }}
@@ -250,7 +250,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
             {mode === "file" ? (
               <>
                 <p className="text-zinc-400 text-sm mb-5">
-                  Drop a GIF here or choose one below.
+                  Drop an image here or choose one below.
                 </p>
                 <label className="block cursor-pointer w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-sm font-medium transition-all duration-200 text-center hover:scale-[1.02] active:scale-95">
                   Choose File

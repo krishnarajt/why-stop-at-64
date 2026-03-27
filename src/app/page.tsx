@@ -1,23 +1,28 @@
 import fs from "fs";
 import path from "path";
-import GifCard from "@/components/GifCard";
+import ImageCard from "@/components/ImageCard";
 import Marquee from "@/components/Marquee";
 import FeatureBadges from "@/components/FeatureBadges";
 
 export const dynamic = "force-dynamic";
 
-function getGifs() {
+const IMAGE_EXTENSIONS = new Set([".gif", ".png", ".jpg", ".jpeg", ".webp"]);
+
+function getImages() {
   const dir = path.join(process.cwd(), "public", "gifs");
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
-    .filter((f) => f.toLowerCase().endsWith(".gif"))
+    .filter((f) => {
+      const ext = f.toLowerCase().slice(f.lastIndexOf("."));
+      return IMAGE_EXTENSIONS.has(ext);
+    })
     .sort((a, b) => a.localeCompare(b))
     .map((f) => ({ src: `/gifs/${f.replace(/ /g, "%20")}`, name: f }));
 }
 
 export default function Home() {
-  const gifs = getGifs();
+  const gifs = getImages();
 
   return (
     <main className="flex-1 overflow-x-hidden">
@@ -34,7 +39,7 @@ export default function Home() {
             <span className="hidden sm:inline">no bs</span>
             <span className="inline-flex items-center gap-1 text-emerald-400 font-medium">
               <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-              {gifs.length} GIFs live
+              {gifs.length} images live
             </span>
           </div>
         </div>
@@ -84,7 +89,7 @@ export default function Home() {
               The Collection
             </h2>
             <p className="text-zinc-500 text-sm mt-1 animate-slide-in-left" style={{ animationDelay: "100ms" }}>
-              {gifs.length} GIFs, each one a masterpiece. Click any to download.
+              {gifs.length} images, each one a masterpiece. Click any to download.
             </p>
           </div>
           <span className="text-xs text-zinc-600 animate-slide-in-right hidden sm:block">
@@ -94,7 +99,7 @@ export default function Home() {
 
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 stagger-children">
           {gifs.map((gif, i) => (
-            <GifCard key={gif.name} src={gif.src} name={gif.name} index={i} />
+            <ImageCard key={gif.name} src={gif.src} name={gif.name} index={i} />
           ))}
         </div>
       </section>

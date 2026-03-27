@@ -4,16 +4,17 @@ import { useRef, useState } from "react";
 import { encode, encodeToText } from "@/lib/stego/client";
 import type { ProgressStage } from "@/lib/stego/types";
 import ProgressBar from "./ProgressBar";
+import QRCode from "qrcode";
 
 interface EncodeModalProps {
-  gifUrl: string;
-  gifName: string;
+  imageUrl: string;
+  imageName: string;
   onClose: () => void;
 }
 
 export default function EncodeModal({
-  gifUrl,
-  gifName,
+  imageUrl,
+  imageName,
   onClose,
 }: EncodeModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -28,9 +29,17 @@ export default function EncodeModal({
   const [lastFileBytes, setLastFileBytes] = useState<Uint8Array | null>(null);
   const [lastFileName, setLastFileName] = useState<string>("");
   const [lastPassword, setLastPassword] = useState<string | undefined>();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [qrProcessing, setQrProcessing] = useState(false);
+  const [qrError, setQrError] = useState<string>("");
+
+  // QR codes can hold ~2953 bytes; Base32768 chars are 2-3 bytes in UTF-8.
+  // Conservative limit: ~1200 chars of Base32768 text ≈ ~2.5KB UTF-8.
+  const QR_TEXT_LIMIT = 1200;
 
   async function handleEncode() {
-    const file = fileInputRef.current?.files?.[0];
+    const file = selectedFile || fileInputRef.current?.files?.[0];
     if (!file) {
       setStatus("Select a file first.");
       return;
@@ -39,39 +48,41 @@ export default function EncodeModal({
     setProcessing(true);
     setStatus("");
     setTextOutput("");
+    setQrDataUrl("");
+    setQrError("");
     setStage(null);
 
     try {
-      const [gifBuffer, fileBuffer] = await Promise.all([
-        fetch(gifUrl).then((r) => r.arrayBuffer()),
+      const [imageBuffer, fileBuffer] = await Promise.all([
+        fetch(imageUrl).then((r) => r.arrayBuffer()),
         file.arrayBuffer(),
       ]);
 
-      const gifBytes = new Uint8Array(gifBuffer);
+      const imageBytes = new Uint8Array(imageBuffer);
       const fileBytes = new Uint8Array(fileBuffer);
       const pw = password || undefined;
 
       const onProgress = (s: ProgressStage) => setStage(s);
 
-      const result = await encode(gifBytes, fileBytes, file.name, pw, onProgress);
+      const result = await encode(imageBytes, fileBytes, file.name, pw, onProgress);
 
       setStage("done");
       setLastFileBytes(fileBytes);
       setLastFileName(file.name);
       setLastPassword(pw);
 
-      // Download the GIF
-      const blob = new Blob([result as BlobPart], { type: "image/gif" });
+      // Download the image
+      const blob = new Blob([result as BlobPart]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = gifName;
+      a.download = imageName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      const payloadSize = result.length - gifBytes.length;
+      const payloadSize = result.length - imageBytes.length;
       const ratio = ((payloadSize / fileBytes.length) * 100).toFixed(0);
       setStatus(
         `Done${pw ? " (encrypted)" : ""}. Original: ${formatSize(fileBytes.length)} → Payload: ${formatSize(payloadSize)} (${ratio}% of original)`
@@ -103,6 +114,25 @@ export default function EncodeModal({
     setTimeout(() => setCopied(false), 2000);
   }
 
+  async function handleGenerateQR() {
+    if (!textOutput) return;
+    setQrProcessing(true);
+    setQrError("");
+    try {
+      const dataUrl = await QRCode.toDataURL(textOutput, {
+        errorCorrectionLevel: "L",
+        margin: 2,
+        width: 300,
+        color: { dark: "#e4e4e7", light: "#18181b" }, // zinc-200 on zinc-900
+      });
+      setQrDataUrl(dataUrl);
+    } catch {
+      setQrError("Payload too large for QR code.");
+    } finally {
+      setQrProcessing(false);
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
@@ -123,14 +153,33 @@ export default function EncodeModal({
 
         <p className="text-zinc-400 text-sm mb-4">
           Select a file. It will be compressed and bundled with{" "}
-          <span className="text-white font-mono">{gifName}</span>.
+          <span className="text-white font-mono">{imageName}</span>.
         </p>
 
         <input
           ref={fileInputRef}
           type="file"
+          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
           className="w-full text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer mb-3"
         />
+
+        {/* Capacity indicator */}
+        {selectedFile && !processing && stage !== "done" && (
+          <div className="mb-3 px-3 py-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-zinc-400">
+                {selectedFile.name}
+              </span>
+              <span className="text-zinc-500 font-mono">
+                {formatSize(selectedFile.size)}
+              </span>
+            </div>
+            <div className="mt-1 text-[11px] text-zinc-500">
+              Estimated payload: ~{formatSize(estimatePayload(selectedFile.size))}
+              {password && " + encryption overhead"}
+            </div>
+          </div>
+        )}
 
         {/* Optional password */}
         <div className="mb-4">
@@ -219,6 +268,35 @@ export default function EncodeModal({
               value={textOutput}
               className="w-full h-28 bg-zinc-800 border border-zinc-700 rounded-lg p-3 text-xs text-zinc-300 font-mono resize-none focus:outline-none focus:border-zinc-500"
             />
+
+            {/* QR code output for small payloads */}
+            {textOutput.length <= QR_TEXT_LIMIT && !qrDataUrl && (
+              <button
+                onClick={handleGenerateQR}
+                disabled={qrProcessing}
+                className="w-full mt-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-400 rounded-lg text-xs font-medium transition-colors"
+              >
+                {qrProcessing ? "Generating..." : "Generate QR code"}
+              </button>
+            )}
+
+            {qrError && (
+              <p className="mt-2 text-xs text-red-400">{qrError}</p>
+            )}
+
+            {qrDataUrl && (
+              <div className="mt-3 flex flex-col items-center gap-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={qrDataUrl}
+                  alt="QR code"
+                  className="w-[200px] h-[200px] rounded-lg"
+                />
+                <span className="text-[10px] text-zinc-500">
+                  Scan to get the encoded text
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -239,4 +317,13 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Conservative estimate: zstd typically achieves 50-85% compression. Use 50% as a middle estimate. */
+function estimatePayload(fileSize: number): number {
+  // Header overhead: ~15 bytes (flags + size + name length + short name)
+  const headerOverhead = 15;
+  // Zstd at level 19 typically compresses to 15-50% of original; use 40% as conservative estimate
+  const compressedSize = Math.ceil(fileSize * 0.4);
+  return headerOverhead + compressedSize;
 }

@@ -3,13 +3,13 @@
 import { useCallback, useRef, useState } from "react";
 import EncodeModal from "./EncodeModal";
 
-interface GifCardProps {
+interface ImageCardProps {
   src: string;
   name: string;
   index: number;
 }
 
-export default function GifCard({ src, name, index }: GifCardProps) {
+export default function ImageCard({ src, name, index }: ImageCardProps) {
   const [showModal, setShowModal] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const clickCount = useRef(0);
@@ -55,7 +55,7 @@ export default function GifCard({ src, name, index }: GifCardProps) {
 
   // Clean display name: remove extension and replace hyphens/underscores
   const displayName = name
-    .replace(/\.gif$/i, "")
+    .replace(/\.(gif|png|jpe?g|webp)$/i, "")
     .replace(/[-_]/g, " ");
 
   return (
@@ -105,8 +105,8 @@ export default function GifCard({ src, name, index }: GifCardProps) {
 
       {showModal && (
         <EncodeModal
-          gifUrl={src}
-          gifName={name}
+          imageUrl={src}
+          imageName={name}
           onClose={() => setShowModal(false)}
         />
       )}

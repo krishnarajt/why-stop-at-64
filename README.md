@@ -1,6 +1,6 @@
 # Why Stop at 64?
 
-A curated collection of exactly 64 GIFs with a hidden steganography system that lets you compress, optionally encrypt, and hide arbitrary files inside GIF images — then share them as plain text.
+A curated image collection with a hidden steganography system that lets you compress, optionally encrypt, and hide arbitrary files inside images (GIF, PNG, JPEG, WebP) — then share them as plain text or QR codes.
 
 The name isn't about 64 GIFs. It's about **Base64**, and why we decided not to stop there.
 
@@ -27,7 +27,7 @@ The theoretical floor is Shannon entropy: the minimum bits required to represent
 
 ## What We Did
 
-We built a four-stage pipeline, each stage modular and independently replaceable:
+We built a five-stage pipeline, each stage modular and independently replaceable:
 
 ### Stage 1: Compression (Zstandard, level 19)
 
@@ -51,14 +51,23 @@ The FLAGS byte in the binary header records whether encryption was applied (bit 
 
 Encryption is entirely optional. If no password is provided, this stage is skipped and the pipeline behaves exactly as it would without it.
 
-### Stage 3: Binary Embedding (Raw Bytes in GIF)
+### Stage 3: Binary Embedding (Raw Bytes in Images)
 
-The original implementation used Base64 to encode data before hiding it in the GIF. This was unnecessary. A GIF is a binary file — every byte position after the GIF trailer (0x3B) can hold any value from 0x00 to 0xFF. There's no text-safety constraint. Encoding to Base64 was inflating the payload by 33% for zero benefit.
+The original implementation used Base64 to encode data before hiding it in a GIF. This was unnecessary. Image files are binary — every byte position after the format's end-of-file marker can hold any value from 0x00 to 0xFF. There's no text-safety constraint. Encoding to Base64 was inflating the payload by 33% for zero benefit.
 
-We dropped Base64 entirely and store raw compressed (and optionally encrypted) bytes directly. The V2 binary format:
+We dropped Base64 entirely and store raw compressed (and optionally encrypted) bytes directly. The embedding works with four image formats, each with its own end-of-file marker:
+
+| Format | End marker | Detection |
+|--------|-----------|-----------|
+| GIF | `0x3B` trailer byte | Scan backwards for last `0x3B` |
+| JPEG | `FF D9` (EOI marker) | Scan backwards for last `FF D9` |
+| PNG | End of IEND chunk | Find `IEND` chunk + 4-byte CRC |
+| WebP | End of RIFF container | Read 4-byte LE size at offset 4 |
+
+The V2 binary format appended after the image's end marker:
 
 ```
-[Original GIF bytes, including 0x3B trailer]
+[Original image bytes, including end marker]
 [MAGIC: "STEG_V2\0"]           ← 8 bytes, identifies our format
 [FLAGS: 1 byte]                 ← bit 0: DEFLATE (legacy), bit 1: encrypted, bit 2: zstd
 [ORIGINAL_SIZE: 4 bytes LE]     ← enables buffer pre-allocation on decode
@@ -67,6 +76,8 @@ We dropped Base64 entirely and store raw compressed (and optionally encrypted) b
 [DATA: raw bytes]               ← compressed, optionally encrypted
 [END MARKER: "\0STEG_END"]     ← 8 bytes
 ```
+
+All four formats tolerate trailing bytes — image viewers, browsers, and messaging apps ignore everything after the end marker and display the image normally. Extraction just searches for `STEG_V2\0` magic bytes regardless of carrier format.
 
 Compared to V1 (Base64): a 1MB file used to become ~1.33MB of payload. Now it compresses to ~200-600KB of payload depending on content. That's a 2-6x improvement.
 
@@ -94,6 +105,26 @@ The obvious next question. Base65536 encodes 16 bits per character — one more 
 
 The tradeoff is 6% fewer characters (16/15 bits) in exchange for significantly worse reliability. One corrupted character and the entire file is unrecoverable. Base32768 was specifically designed to use only Unicode blocks that empirically survive transit across real-world platforms.
 
+### Stage 5: Error Correction (Reed-Solomon)
+
+Even with Base32768's careful character selection, text shared through messaging apps can still get corrupted — an emoji autocorrect here, a smart-quote substitution there. A single wrong character used to mean total data loss. Now the text encoding pipeline includes [Reed-Solomon error correction](https://en.wikipedia.org/wiki/Reed%E2%80%93Solomon_error_correction), the same algorithm used in QR codes, CDs, and deep-space communication.
+
+The implementation operates over GF(2^8) (Galois Field with 256 elements) using the standard primitive polynomial 0x11d. Since a single RS codeword in GF(2^8) can be at most 255 bytes, larger payloads are automatically split into ≤223-byte blocks, each independently protected.
+
+The number of parity symbols scales with payload size: ~3% overhead, with a minimum of 4 (corrects 2 byte errors per block) and a maximum of 32 (corrects 16 byte errors per block). For a typical 10KB compressed payload split across ~45 blocks, that means the system can recover from up to **~720 corrupted bytes** across the entire message — enough to survive most copy-paste mangling.
+
+The text format stores a small header before the RS-encoded blocks:
+
+```
+[RS_NSYM: 1 byte]          ← parity symbols per block (4-32)
+[ORIG_LEN: 4 bytes LE]     ← original payload length (for block boundary calculation)
+[RS-encoded blocks]         ← each block is ≤223 data bytes + nsym parity bytes
+```
+
+The decoder uses the Berlekamp-Massey algorithm to find the error locator polynomial, Chien search to locate error positions, and the Forney algorithm to compute error magnitudes. If the corruption exceeds the correction capacity, it fails cleanly with a clear message rather than producing garbage.
+
+Legacy text payloads (without RS) are still decoded correctly — the decoder tries RS first and falls back to raw deserialization.
+
 ### Why Not Just Raw Bytes Everywhere?
 
 For the GIF embedding, raw bytes are optimal — there's no text constraint, so any encoding is pure overhead.
@@ -102,29 +133,30 @@ For text sharing, you *need* an encoding because the transport is text. You can'
 
 ## How to Use
 
-### Hiding a file inside a GIF
+### Hiding a file inside an image
 
 1. Open the site at [http://localhost:3000](http://localhost:3000).
-2. Browse the GIF collection and find one you like.
-3. **Triple-click the top-left corner** of any GIF card (within the first 40x40 pixels). This is intentionally hidden — there's no visible button.
+2. Browse the image collection and find one you like. The collection includes GIFs, PNGs, JPEGs, and WebPs.
+3. **Triple-click the top-left corner** of any image card (within the first 40x40 pixels). This is intentionally hidden — there's no visible button.
 4. The **Attach** modal opens.
-5. Click the file input and select any file you want to hide.
+5. Click the file input and select any file you want to hide. A **capacity indicator** will show the file size and estimated compressed payload size so you know what to expect before encoding.
 6. **(Optional)** Enter a password in the password field. If provided, the file will be encrypted with AES-256-GCM before embedding. Leave it blank for no encryption.
-7. Click **Download**. The GIF will download to your computer with the file hidden inside. It still looks and works like a normal GIF — image viewers, browsers, and messaging apps will display it normally.
+7. Click **Download**. The image will download to your computer with the file hidden inside. It still looks and works like a normal image — image viewers, browsers, and messaging apps will display it normally.
 8. **(Optional)** After encoding completes, click **Generate text version** to produce a Base32768 Unicode string of the same file. Click **Copy** to copy it to your clipboard for sharing via text channels. This step is on-demand to keep the initial encode fast.
+9. **(Optional)** For small payloads (under ~1200 characters of text output), a **Generate QR code** button appears below the text. Click it to produce a scannable QR code containing the encoded data. The recipient scans it and pastes the result into the Paste Text tab to decode.
 
-### Extracting a hidden file from a GIF
+### Extracting a hidden file from an image
 
 1. Scroll down to the feature badges section on the site.
 2. Find the **"Safe & Secure"** badge (fourth badge) and **triple-click** it. This opens the **Extract** modal.
-3. You'll see two tabs: **GIF File** and **Paste Text**.
+3. You'll see two tabs: **Image File** and **Paste Text**.
 
-**From a GIF file:**
-1. Select the **GIF File** tab (default).
-2. Either drag and drop a GIF into the modal, or click **Choose File** to select one.
-3. If the GIF has no hidden data, you'll see "Nothing here."
-4. If the GIF has hidden data and it's **not encrypted**, the hidden file downloads automatically.
-5. If the GIF has hidden data and it **is encrypted**, a password prompt appears. Enter the password that was used during encoding and click **Decrypt**. If the password is wrong, you'll see an error — AES-GCM doesn't silently produce garbage, it fails cleanly.
+**From an image file:**
+1. Select the **Image File** tab (default).
+2. Either drag and drop an image into the modal, or click **Choose File** to select one. Supports GIF, PNG, JPEG, and WebP.
+3. If the image has no hidden data, you'll see "Nothing here."
+4. If the image has hidden data and it's **not encrypted**, the hidden file downloads automatically.
+5. If the image has hidden data and it **is encrypted**, a password prompt appears. Enter the password that was used during encoding and click **Decrypt**. If the password is wrong, you'll see an error — AES-GCM doesn't silently produce garbage, it fails cleanly.
 
 **From pasted text:**
 1. Select the **Paste Text** tab.
@@ -135,9 +167,11 @@ For text sharing, you *need* an encoding because the transport is text. You can'
 
 ### Sharing a hidden file
 
-**Via GIF:** Send the downloaded GIF through any channel — email, messaging apps, social media, cloud storage. The GIF will display and play normally everywhere. The recipient just needs to visit this site and use the extract flow above.
+**Via image:** Send the downloaded image through any channel — email, messaging apps, social media, cloud storage. The image will display normally everywhere. The recipient just needs to visit this site and use the extract flow above.
 
 **Via text:** Copy the Base32768 text output and paste it into any text channel — Teams, WhatsApp, Discord, email. The recipient pastes it into the Paste Text tab on the extract modal. Note: this works best for smaller files, as large files produce very long strings.
+
+**Via QR code:** For very small files (compressed payload under ~2KB), generate a QR code from the text output. Share it as an image — screenshot, photo, print. The recipient scans the QR code with any scanner app, then pastes the scanned text into the Paste Text tab to decode. This is useful for sharing small secrets (passwords, keys, short messages) without any digital trail.
 
 ## The Architecture
 
@@ -149,32 +183,26 @@ src/lib/stego/
   types.ts          ← Constants (magic bytes, flags) and shared types
   compression.ts    ← compress/decompress — Zstd via WASM, with DEFLATE fallback for legacy
   encryption.ts     ← encrypt/decrypt — AES-256-GCM via Web Crypto API
-  embed.ts          ← GIF binary embedding — find trailer, insert/extract payload
+  embed.ts          ← Multi-format image embedding — GIF, PNG, JPEG, WebP
   format.ts         ← Binary format serialization — header layout, versioning
-  textcodec.ts      ← Unicode text encoding — swap Base32768 for anything
+  reed-solomon.ts   ← Reed-Solomon error correction — GF(2^8), multi-block
+  textcodec.ts      ← Unicode text encoding — Base32768 + RS error correction
   worker.ts         ← Web Worker — runs all pipeline stages off the main thread
   client.ts         ← Main-thread client — same API as index.ts, delegates to worker
 ```
 
 All stego operations (compression, encryption, embedding, text encoding) run in a **Web Worker**, keeping the main thread and UI fully responsive even for large files. The worker is lazily spawned on first use and communicates via `postMessage`, with `Uint8Array` buffers transferred zero-copy. Progress stage callbacks are forwarded from the worker to the main thread so the progress bar updates in real time.
 
-Want better compression? Replace `compression.ts`. Want a different text encoding? Replace `textcodec.ts`. Want to embed in PNGs instead of GIFs? Replace `embed.ts`. Want a different encryption scheme? Replace `encryption.ts`. Nothing else changes.
+Want better compression? Replace `compression.ts`. Want a different text encoding? Replace `textcodec.ts`. Want to support more image formats? Add a new end-marker finder to `embed.ts`. Want a different encryption scheme? Replace `encryption.ts`. Want a different error correction code? Replace `reed-solomon.ts`. Nothing else changes.
 
-The decoder is backward-compatible: V1 (legacy Base64) GIFs and V2 DEFLATE-compressed GIFs still decode correctly alongside new Zstd-compressed payloads.
+The decoder is backward-compatible: V1 (legacy Base64) GIFs and V2 DEFLATE-compressed GIFs still decode correctly alongside new Zstd-compressed payloads. All four carrier formats (GIF, PNG, JPEG, WebP) use the same payload format.
 
 ## What We Could Still Do
 
 - **Chunked progress**: The progress bar currently jumps between pipeline stages because zstd compress/decompress is a single synchronous WASM call. Splitting large files into chunks and compressing each individually would allow reporting real percentage progress — more honest UX for multi-MB files.
-- **Capacity indicator**: Show the user how much bigger the GIF will get *before* they commit to encoding. Currently you only see the compression ratio after encoding finishes.
-- **Multi-file support**: Tar-like bundling before compression — hide a whole folder in one GIF. The format already has a filename field; you'd just need a file-count header and repeat the name+data blocks.
-- **Embed in PNGs/WebPs**: The `embed.ts` module is already isolated. PNG has ancillary chunks (tEXt, zTXt, iTXt) that survive most pipelines. WebP has RIFF chunks. Broader format support means more carrier options.
+- **Multi-file support**: Tar-like bundling before compression — hide a whole folder in one image. The format already has a filename field; you'd just need a file-count header and repeat the name+data blocks.
 - **Plausible deniability**: The `STEG_V2\0` magic bytes are a dead giveaway if someone looks at the hex. Encrypting the entire payload including the header would make it indistinguishable from random trailing bytes without the password.
-- **Drag-and-drop encode**: Currently you triple-click to open the modal, then use a file picker. Supporting drag-and-drop of the file directly onto a GIF card would be smoother.
-- **Dictionary compression**: Zstd supports pre-trained dictionaries. If users frequently hide similar file types (e.g., JSON configs, source code), a shared dictionary could dramatically improve ratios on small files where zstd normally can't build good context.
-- **QR code output**: For very small payloads (under ~2KB), generate a QR code as an alternative sharing method alongside the Base32768 text.
-- **Error correction**: Append a CRC32 or Reed-Solomon checksum to the text encoding so corrupted pastes can be detected (or even recovered).
 - **Streaming**: For very large files, streaming compression would reduce peak memory usage.
-- **WASM-based encryption**: The Web Crypto API forces async even for tiny payloads. A WASM AES-GCM implementation could be synchronous and faster for small data, though Web Crypto is hardware-accelerated on most platforms so it would only help at the margins.
 
 ## Running Locally
 
@@ -185,7 +213,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-GIFs are auto-discovered from `public/gifs/`. Add or remove `.gif` files to change the collection.
+Images are auto-discovered from `public/gifs/`. Add or remove `.gif`, `.png`, `.jpg`, `.jpeg`, or `.webp` files to change the collection.
 
 ## Tech Stack
 
@@ -194,5 +222,6 @@ GIFs are auto-discovered from `public/gifs/`. Add or remove `.gif` files to chan
 - **@bokuweb/zstd-wasm** (Zstandard compression via WebAssembly)
 - **fflate** (DEFLATE decompression for legacy payloads)
 - **base32768** (Unicode text encoding)
+- **qrcode** (QR code generation for small payloads)
 - **Web Crypto API** (AES-256-GCM encryption, PBKDF2 key derivation)
-- **TypeScript**, no additional runtime dependencies for encryption
+- **TypeScript**, custom Reed-Solomon implementation (no external dependency)

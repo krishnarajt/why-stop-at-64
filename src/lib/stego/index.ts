@@ -7,15 +7,16 @@ import {
   deserializePayloadV1,
   isPayloadEncrypted,
 } from "./format";
-import { embedInGif, extractFromGif } from "./embed";
+import { embedInImage, extractFromImage } from "./embed";
 import { toText, fromText, isTextEncrypted } from "./textcodec";
 
 /**
- * Hide a file inside a GIF (zstd-compressed raw bytes, V2 format).
+ * Hide a file inside an image (zstd-compressed raw bytes, V2 format).
+ * Supports GIF, JPEG, PNG, and WebP carriers.
  * Optionally encrypt with a password.
  */
 export async function encode(
-  gifBytes: Uint8Array,
+  imageBytes: Uint8Array,
   fileBytes: Uint8Array,
   fileName: string,
   password?: string,
@@ -23,31 +24,31 @@ export async function encode(
 ): Promise<Uint8Array> {
   const payload = await serializePayload(fileName, fileBytes, password, onProgress);
   onProgress?.("embedding");
-  return embedInGif(gifBytes, payload);
+  return embedInImage(imageBytes, payload);
 }
 
 /**
- * Check if a GIF contains an encrypted payload.
+ * Check if an image contains an encrypted payload.
  */
-export function isEncrypted(gifBytes: Uint8Array): boolean {
-  const extracted = extractFromGif(gifBytes);
+export function isEncrypted(imageBytes: Uint8Array): boolean {
+  const extracted = extractFromImage(imageBytes);
   if (!extracted || extracted.version !== 2) return false;
   return isPayloadEncrypted(extracted.payload);
 }
 
 /**
- * Extract a hidden file from a GIF. Supports V2 (compressed, optionally encrypted)
+ * Extract a hidden file from an image. Supports V2 (compressed, optionally encrypted)
  * and V1 (legacy base64).
  * Throws "PASSWORD_REQUIRED" if encrypted and no password provided.
  * Throws on wrong password (AES-GCM auth failure).
  */
 export async function decode(
-  gifBytes: Uint8Array,
+  imageBytes: Uint8Array,
   password?: string,
   onProgress?: OnProgress
 ): Promise<StegoPayload | null> {
   onProgress?.("extracting");
-  const extracted = extractFromGif(gifBytes);
+  const extracted = extractFromImage(imageBytes);
   if (!extracted) return null;
 
   if (extracted.version === 2) {

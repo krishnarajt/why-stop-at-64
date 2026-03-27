@@ -36,7 +36,7 @@ export default function DecodeUpload() {
   async function handleDecode() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
-      setStatus("Drop a GIF first!");
+      setStatus("Drop an image first!");
       return;
     }
 
@@ -60,7 +60,7 @@ export default function DecodeUpload() {
 
       const result = await decode(bytes, undefined, onProgress);
       if (!result) {
-        setStatus("No hidden file found in this GIF.");
+        setStatus("No hidden file found in this image.");
         setStage(null);
         return;
       }
@@ -182,7 +182,7 @@ export default function DecodeUpload() {
         <span className="inline-block text-3xl animate-float">^</span>
       </div>
       <h3 className="text-base font-semibold text-white mb-1">
-        Got a GIF from a friend?
+        Got an image from a friend?
       </h3>
       <p className="text-xs text-zinc-500 mb-5">
         Drop it here, upload, or paste encoded text.
@@ -233,7 +233,7 @@ export default function DecodeUpload() {
                   : "text-zinc-400 hover:text-zinc-300"
               }`}
             >
-              GIF File
+              Image File
             </button>
             <button
               onClick={() => { setMode("text"); setStatus(""); setStage(null); }}
@@ -250,11 +250,11 @@ export default function DecodeUpload() {
           {mode === "file" ? (
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <label className="cursor-pointer px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-[1.03] active:scale-95">
-                Choose GIF
+                Choose Image
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/gif"
+                  accept="image/gif,image/png,image/jpeg,image/webp"
                   className="hidden"
                   onChange={handleDecode}
                 />
