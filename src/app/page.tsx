@@ -3,6 +3,8 @@ import path from "path";
 import GifCard from "@/components/GifCard";
 import DecodeUpload from "@/components/DecodeUpload";
 
+export const dynamic = "force-dynamic";
+
 function getGifs() {
   const dir = path.join(process.cwd(), "public", "gifs");
   if (!fs.existsSync(dir)) return [];
@@ -10,7 +12,7 @@ function getGifs() {
     .readdirSync(dir)
     .filter((f) => f.toLowerCase().endsWith(".gif"))
     .sort((a, b) => a.localeCompare(b))
-    .map((f) => ({ src: `/gifs/${encodeURIComponent(f)}`, name: f }));
+    .map((f) => ({ src: `/gifs/${f.replace(/ /g, "%20")}`, name: f }));
 }
 
 export default function Home() {

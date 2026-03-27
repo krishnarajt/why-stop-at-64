@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import Image from "next/image";
 import EncodeModal from "./EncodeModal";
 
 interface GifCardProps {
@@ -55,12 +54,12 @@ export default function GifCard({ src, name }: GifCardProps) {
     <>
       <div className="group relative bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-zinc-600 transition-colors">
         <div className="relative aspect-square cursor-pointer" onClick={handleCornerClick}>
-          <Image
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
             src={src}
             alt={name}
-            fill
-            className="object-cover"
-            unoptimized
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
           />
         </div>
         <div className="p-3 flex items-center justify-between">
