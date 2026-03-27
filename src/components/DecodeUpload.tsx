@@ -1,17 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { decode } from "@/lib/stego";
 
 export default function DecodeUpload() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string>("");
   const [processing, setProcessing] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   async function handleDecode() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
-      setStatus("Please upload a GIF first.");
+      setStatus("Drop a GIF first!");
       return;
     }
 
@@ -28,7 +29,6 @@ export default function DecodeUpload() {
         return;
       }
 
-      // Download the extracted file
       const blob = new Blob([result.data as BlobPart]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -41,39 +41,76 @@ export default function DecodeUpload() {
 
       setStatus(`Extracted: ${result.fileName}`);
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setStatus(
+        `Error: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
     } finally {
       setProcessing(false);
     }
   }
 
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file && fileInputRef.current) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      fileInputRef.current.files = dt.files;
+      // Auto-trigger decode
+      fileInputRef.current.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }, []);
+
   return (
-    <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-6 max-w-lg mx-auto">
-      <h2 className="text-lg font-semibold text-white mb-1">
-        Upload a GIF
-      </h2>
-      <p className="text-zinc-500 text-sm mb-4">
-        Got a GIF from a friend? Upload it to save it to your collection.
+    <div
+      className={`relative max-w-xl mx-auto rounded-2xl border-2 border-dashed p-8 text-center transition-all duration-300 ${
+        dragging
+          ? "border-purple-500 bg-purple-500/10 scale-[1.02]"
+          : "border-zinc-700 bg-zinc-900/30 hover:border-zinc-600 hover:bg-zinc-900/50"
+      }`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={handleDrop}
+    >
+      <div className="mb-3">
+        <span className="inline-block text-3xl animate-float">^</span>
+      </div>
+      <h3 className="text-base font-semibold text-white mb-1">
+        Got a GIF from a friend?
+      </h3>
+      <p className="text-xs text-zinc-500 mb-5">
+        Drop it here or click to upload. We&apos;ll add it to your collection.
       </p>
 
-      <div className="flex gap-3 items-center">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/gif"
-          className="flex-1 text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700 file:cursor-pointer"
-        />
-        <button
-          onClick={handleDecode}
-          disabled={processing}
-          className="py-2 px-5 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg font-medium transition-colors shrink-0"
-        >
-          {processing ? "..." : "Upload"}
-        </button>
+      <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+        <label className="cursor-pointer px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-[1.03] active:scale-95">
+          Choose GIF
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/gif"
+            className="hidden"
+            onChange={handleDecode}
+          />
+        </label>
+        <span className="text-xs text-zinc-600">or drag & drop</span>
       </div>
 
-      {status && (
-        <p className="mt-3 text-sm text-zinc-400">{status}</p>
+      {processing && (
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <span className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-zinc-400">{status}</span>
+        </div>
+      )}
+
+      {!processing && status && (
+        <p className="mt-4 text-sm text-zinc-400 animate-fade-in-up">
+          {status}
+        </p>
       )}
     </div>
   );

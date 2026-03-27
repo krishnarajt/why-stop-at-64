@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Why Stop at 64?",
-  description: "The internet's finest collection of 64 GIFs.",
+  title: "Why Stop at 64? | Free GIFs, No Sign-Up",
+  description:
+    "The internet's most curated collection of exactly 64 GIFs. No login, no tracking, no nonsense. Just GIFs.",
 };
 
 export default function RootLayout({

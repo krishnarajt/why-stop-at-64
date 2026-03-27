@@ -21,27 +21,23 @@ export default function EncodeModal({
   async function handleEncode() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
-      setStatus("Please select a file to hide.");
+      setStatus("Select a file first.");
       return;
     }
 
     setProcessing(true);
-    setStatus("Encoding...");
+    setStatus("Processing...");
 
     try {
-      // Fetch the GIF
       const gifResp = await fetch(gifUrl);
       const gifBuffer = await gifResp.arrayBuffer();
       const gifBytes = new Uint8Array(gifBuffer);
 
-      // Read the file to hide
       const fileBuffer = await file.arrayBuffer();
       const fileBytes = new Uint8Array(fileBuffer);
 
-      // Encode
       const result = encode(gifBytes, fileBytes, file.name);
 
-      // Download
       const blob = new Blob([result as BlobPart], { type: "image/gif" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -52,9 +48,9 @@ export default function EncodeModal({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      setStatus("Done! Your file has been hidden in the GIF.");
-    } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setStatus("Done.");
+    } catch {
+      setStatus("Something went wrong. Try again.");
     } finally {
       setProcessing(false);
     }
@@ -62,14 +58,14 @@ export default function EncodeModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+      <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl animate-bounce-in">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold text-white">Hide a File</h2>
+          <h2 className="text-lg font-semibold text-white">Attach</h2>
           <button
             onClick={onClose}
             className="text-zinc-400 hover:text-white text-xl leading-none"
@@ -79,8 +75,8 @@ export default function EncodeModal({
         </div>
 
         <p className="text-zinc-400 text-sm mb-4">
-          Select a file to embed inside <span className="text-white font-mono">{gifName}</span>.
-          The GIF will look identical but carry your hidden file.
+          Select a file. It will be bundled with{" "}
+          <span className="text-white font-mono">{gifName}</span>.
         </p>
 
         <input
@@ -94,7 +90,7 @@ export default function EncodeModal({
           disabled={processing}
           className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-lg font-medium transition-colors"
         >
-          {processing ? "Processing..." : "Encode & Download"}
+          {processing ? "Processing..." : "Download"}
         </button>
 
         {status && (
