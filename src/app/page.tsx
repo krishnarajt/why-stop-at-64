@@ -1,12 +1,21 @@
+import fs from "fs";
+import path from "path";
 import GifCard from "@/components/GifCard";
 import DecodeUpload from "@/components/DecodeUpload";
 
-// This will eventually hold all 64 GIFs. For now, one placeholder.
-const gifs = [
-  { src: "/gifs/placeholder.gif", name: "vibing-cat.gif" },
-];
+function getGifs() {
+  const dir = path.join(process.cwd(), "public", "gifs");
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.toLowerCase().endsWith(".gif"))
+    .sort((a, b) => a.localeCompare(b))
+    .map((f) => ({ src: `/gifs/${encodeURIComponent(f)}`, name: f }));
+}
 
 export default function Home() {
+  const gifs = getGifs();
+
   return (
     <main className="flex-1">
       {/* Header */}
