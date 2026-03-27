@@ -1,7 +1,9 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { encode, encodeToText } from "@/lib/stego";
+import { encode, encodeToText } from "@/lib/stego/client";
+import type { ProgressStage } from "@/lib/stego/types";
+import ProgressBar from "./ProgressBar";
 
 interface EncodeModalProps {
   gifUrl: string;
@@ -18,9 +20,14 @@ export default function EncodeModal({
   const [status, setStatus] = useState<string>("");
   const [processing, setProcessing] = useState(false);
   const [textOutput, setTextOutput] = useState<string>("");
+  const [textProcessing, setTextProcessing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [stage, setStage] = useState<ProgressStage | null>(null);
+  const [lastFileBytes, setLastFileBytes] = useState<Uint8Array | null>(null);
+  const [lastFileName, setLastFileName] = useState<string>("");
+  const [lastPassword, setLastPassword] = useState<string | undefined>();
 
   async function handleEncode() {
     const file = fileInputRef.current?.files?.[0];
@@ -30,8 +37,9 @@ export default function EncodeModal({
     }
 
     setProcessing(true);
-    setStatus(password ? "Compressing & encrypting..." : "Compressing...");
+    setStatus("");
     setTextOutput("");
+    setStage(null);
 
     try {
       const [gifBuffer, fileBuffer] = await Promise.all([
@@ -43,12 +51,14 @@ export default function EncodeModal({
       const fileBytes = new Uint8Array(fileBuffer);
       const pw = password || undefined;
 
-      const [result, text] = await Promise.all([
-        encode(gifBytes, fileBytes, file.name, pw),
-        encodeToText(fileBytes, file.name, pw),
-      ]);
+      const onProgress = (s: ProgressStage) => setStage(s);
 
-      setTextOutput(text);
+      const result = await encode(gifBytes, fileBytes, file.name, pw, onProgress);
+
+      setStage("done");
+      setLastFileBytes(fileBytes);
+      setLastFileName(file.name);
+      setLastPassword(pw);
 
       // Download the GIF
       const blob = new Blob([result as BlobPart], { type: "image/gif" });
@@ -68,8 +78,22 @@ export default function EncodeModal({
       );
     } catch {
       setStatus("Something went wrong. Try again.");
+      setStage(null);
     } finally {
       setProcessing(false);
+    }
+  }
+
+  async function handleGenerateText() {
+    if (!lastFileBytes) return;
+    setTextProcessing(true);
+    try {
+      const text = await encodeToText(lastFileBytes, lastFileName, lastPassword);
+      setTextOutput(text);
+    } catch {
+      setStatus("Failed to generate text version.");
+    } finally {
+      setTextProcessing(false);
     }
   }
 
@@ -143,15 +167,34 @@ export default function EncodeModal({
           disabled={processing}
           className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-lg font-medium transition-colors"
         >
-          {processing
-            ? password
-              ? "Encrypting..."
-              : "Compressing..."
-            : "Download"}
+          {processing ? "Processing..." : "Download"}
         </button>
+
+        {processing && (
+          <ProgressBar
+            stage={stage}
+            mode="encode"
+            hasPassword={!!password}
+          />
+        )}
+
+        {!processing && stage === "done" && (
+          <ProgressBar stage="done" mode="encode" hasPassword={!!password} />
+        )}
 
         {status && (
           <p className="mt-3 text-sm text-zinc-300">{status}</p>
+        )}
+
+        {/* Text version: generate on demand */}
+        {!processing && stage === "done" && !textOutput && (
+          <button
+            onClick={handleGenerateText}
+            disabled={textProcessing}
+            className="w-full mt-3 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-300 rounded-lg text-sm font-medium transition-colors"
+          >
+            {textProcessing ? "Generating..." : "Generate text version"}
+          </button>
         )}
 
         {textOutput && (
@@ -177,6 +220,15 @@ export default function EncodeModal({
               className="w-full h-28 bg-zinc-800 border border-zinc-700 rounded-lg p-3 text-xs text-zinc-300 font-mono resize-none focus:outline-none focus:border-zinc-500"
             />
           </div>
+        )}
+
+        {!processing && stage === "done" && (
+          <button
+            onClick={onClose}
+            className="w-full mt-3 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-colors"
+          >
+            Close
+          </button>
         )}
       </div>
     </div>

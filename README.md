@@ -18,7 +18,7 @@ These are fundamentally different operations, and confusing them is the root of 
 
 **Encoding** is a representation change. You're expressing the same information using a different alphabet. Base64 uses 64 characters (A-Z, a-z, 0-9, +, /), encoding 6 bits per character. Base85 uses 85 characters, encoding ~6.4 bits. Base32768 uses 32,768 Unicode characters, encoding 15 bits per character. No matter the base, encoding can never make data smaller in terms of information — it can only change how many characters you need. The byte count may even go *up* depending on how those characters are stored (more on this below).
 
-**Compression** actually removes data — specifically, redundancy. Real files aren't random noise. Text has predictable letter frequencies. Images have regions of similar color. Code repeats patterns. Compression algorithms like DEFLATE exploit this:
+**Compression** actually removes data — specifically, redundancy. Real files aren't random noise. Text has predictable letter frequencies. Images have regions of similar color. Code repeats patterns. Compression algorithms like DEFLATE and Zstandard exploit this:
 
 1. **Dictionary substitution** (LZ77): Find repeated byte sequences, store them once, reference them everywhere else. The word "the" appears 50 times? Store it once, emit 49 tiny back-references.
 2. **Entropy coding** (Huffman): Give frequent bytes short bit patterns and rare bytes long ones. Same idea as Morse code — "E" is a single dot because it's the most common letter.
@@ -29,9 +29,11 @@ The theoretical floor is Shannon entropy: the minimum bits required to represent
 
 We built a four-stage pipeline, each stage modular and independently replaceable:
 
-### Stage 1: Compression (DEFLATE, level 9)
+### Stage 1: Compression (Zstandard, level 19)
 
-Before doing anything else, we compress the file using DEFLATE at maximum compression (level 9) via [fflate](https://github.com/101arrowz/fflate). This is the same algorithm behind ZIP and gzip — well-understood, lossless, and the best general-purpose ratio available in a browser without WASM. Typical files shrink 40-80%.
+Before doing anything else, we compress the file using [Zstandard (zstd)](https://facebook.github.io/zstd/) at level 19 via [@bokuweb/zstd-wasm](https://github.com/bokuweb/zstd-wasm) — a WebAssembly build of Facebook's reference implementation. Zstd achieves 10-30% better compression ratios than DEFLATE at comparable speeds, and significantly better ratios on larger files. The WASM module (~300KB) is lazily loaded on first use from `/zstd.wasm`, so there's zero cost if the steganography feature is never triggered. Typical files shrink 50-85%.
+
+Legacy payloads compressed with the original DEFLATE pipeline (via [fflate](https://github.com/101arrowz/fflate)) are still supported for decoding. The FLAGS byte distinguishes between the two: `FLAG_ZSTD` (bit 2) for new payloads, `FLAG_COMPRESSED` (bit 0) for legacy DEFLATE.
 
 ### Stage 2: Encryption (AES-256-GCM, optional)
 
@@ -58,7 +60,7 @@ We dropped Base64 entirely and store raw compressed (and optionally encrypted) b
 ```
 [Original GIF bytes, including 0x3B trailer]
 [MAGIC: "STEG_V2\0"]           ← 8 bytes, identifies our format
-[FLAGS: 1 byte]                 ← bit 0: compressed, bit 1: encrypted
+[FLAGS: 1 byte]                 ← bit 0: DEFLATE (legacy), bit 1: encrypted, bit 2: zstd
 [ORIGINAL_SIZE: 4 bytes LE]     ← enables buffer pre-allocation on decode
 [FILENAME_LEN: 2 bytes LE]      ← explicit length, not null-terminated
 [FILENAME: N bytes UTF-8]
@@ -80,7 +82,7 @@ This is where "why stop at 64" becomes concrete:
 | Base85 | 6.4 | ~1.25M chars | 1,306,913 |
 | Base32768 | 15 | ~546K chars | 559,241 |
 
-Combined with DEFLATE compression, a 1MB text file that would need ~1.4 million Base64 characters can be represented in roughly **70,000-140,000 Base32768 characters** — a 10-20x reduction in character count.
+Combined with Zstd compression, a 1MB text file that would need ~1.4 million Base64 characters can be represented in roughly **50,000-120,000 Base32768 characters** — a 12-28x reduction in character count.
 
 ### Why Not Base65536?
 
@@ -109,7 +111,7 @@ For text sharing, you *need* an encoding because the transport is text. You can'
 5. Click the file input and select any file you want to hide.
 6. **(Optional)** Enter a password in the password field. If provided, the file will be encrypted with AES-256-GCM before embedding. Leave it blank for no encryption.
 7. Click **Download**. The GIF will download to your computer with the file hidden inside. It still looks and works like a normal GIF — image viewers, browsers, and messaging apps will display it normally.
-8. After encoding completes, a **Text version** appears at the bottom of the modal. This is the same file encoded as a Base32768 Unicode string. Click **Copy** to copy it to your clipboard for sharing via text channels.
+8. **(Optional)** After encoding completes, click **Generate text version** to produce a Base32768 Unicode string of the same file. Click **Copy** to copy it to your clipboard for sharing via text channels. This step is on-demand to keep the initial encode fast.
 
 ### Extracting a hidden file from a GIF
 
@@ -145,23 +147,34 @@ Everything is modular. Each concern lives in its own file and can be improved or
 src/lib/stego/
   index.ts          ← Public API: encode, decode, encodeToText, decodeFromText
   types.ts          ← Constants (magic bytes, flags) and shared types
-  compression.ts    ← compress/decompress — swap DEFLATE for Brotli, zstd, etc.
+  compression.ts    ← compress/decompress — Zstd via WASM, with DEFLATE fallback for legacy
   encryption.ts     ← encrypt/decrypt — AES-256-GCM via Web Crypto API
   embed.ts          ← GIF binary embedding — find trailer, insert/extract payload
   format.ts         ← Binary format serialization — header layout, versioning
   textcodec.ts      ← Unicode text encoding — swap Base32768 for anything
+  worker.ts         ← Web Worker — runs all pipeline stages off the main thread
+  client.ts         ← Main-thread client — same API as index.ts, delegates to worker
 ```
+
+All stego operations (compression, encryption, embedding, text encoding) run in a **Web Worker**, keeping the main thread and UI fully responsive even for large files. The worker is lazily spawned on first use and communicates via `postMessage`, with `Uint8Array` buffers transferred zero-copy. Progress stage callbacks are forwarded from the worker to the main thread so the progress bar updates in real time.
 
 Want better compression? Replace `compression.ts`. Want a different text encoding? Replace `textcodec.ts`. Want to embed in PNGs instead of GIFs? Replace `embed.ts`. Want a different encryption scheme? Replace `encryption.ts`. Nothing else changes.
 
-The decoder is backward-compatible: V1 (legacy Base64) GIFs still decode correctly alongside V2.
+The decoder is backward-compatible: V1 (legacy Base64) GIFs and V2 DEFLATE-compressed GIFs still decode correctly alongside new Zstd-compressed payloads.
 
 ## What We Could Still Do
 
-- **Brotli or zstd compression**: Higher ratios than DEFLATE, but require WASM in the browser. A drop-in replacement in `compression.ts`.
-- **Web Worker offloading**: DEFLATE level 9 is synchronous and blocks the main thread. For files over ~10MB, moving compression to a Worker would keep the UI responsive. The module boundary is already clean for this.
+- **Chunked progress**: The progress bar currently jumps between pipeline stages because zstd compress/decompress is a single synchronous WASM call. Splitting large files into chunks and compressing each individually would allow reporting real percentage progress — more honest UX for multi-MB files.
+- **Capacity indicator**: Show the user how much bigger the GIF will get *before* they commit to encoding. Currently you only see the compression ratio after encoding finishes.
+- **Multi-file support**: Tar-like bundling before compression — hide a whole folder in one GIF. The format already has a filename field; you'd just need a file-count header and repeat the name+data blocks.
+- **Embed in PNGs/WebPs**: The `embed.ts` module is already isolated. PNG has ancillary chunks (tEXt, zTXt, iTXt) that survive most pipelines. WebP has RIFF chunks. Broader format support means more carrier options.
+- **Plausible deniability**: The `STEG_V2\0` magic bytes are a dead giveaway if someone looks at the hex. Encrypting the entire payload including the header would make it indistinguishable from random trailing bytes without the password.
+- **Drag-and-drop encode**: Currently you triple-click to open the modal, then use a file picker. Supporting drag-and-drop of the file directly onto a GIF card would be smoother.
+- **Dictionary compression**: Zstd supports pre-trained dictionaries. If users frequently hide similar file types (e.g., JSON configs, source code), a shared dictionary could dramatically improve ratios on small files where zstd normally can't build good context.
+- **QR code output**: For very small payloads (under ~2KB), generate a QR code as an alternative sharing method alongside the Base32768 text.
 - **Error correction**: Append a CRC32 or Reed-Solomon checksum to the text encoding so corrupted pastes can be detected (or even recovered).
-- **Streaming**: fflate supports streaming compression for very large files, which would reduce memory usage.
+- **Streaming**: For very large files, streaming compression would reduce peak memory usage.
+- **WASM-based encryption**: The Web Crypto API forces async even for tiny payloads. A WASM AES-GCM implementation could be synchronous and faster for small data, though Web Crypto is hardware-accelerated on most platforms so it would only help at the margins.
 
 ## Running Locally
 
@@ -178,7 +191,8 @@ GIFs are auto-discovered from `public/gifs/`. Add or remove `.gif` files to chan
 
 - **Next.js 16** (App Router)
 - **Tailwind CSS v4**
-- **fflate** (DEFLATE compression)
+- **@bokuweb/zstd-wasm** (Zstandard compression via WebAssembly)
+- **fflate** (DEFLATE decompression for legacy payloads)
 - **base32768** (Unicode text encoding)
 - **Web Crypto API** (AES-256-GCM encryption, PBKDF2 key derivation)
 - **TypeScript**, no additional runtime dependencies for encryption

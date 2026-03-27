@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { decode, decodeFromText, isEncrypted, isTextEncryptedCheck } from "@/lib/stego";
+import { decode, decodeFromText, isEncrypted, isTextEncryptedCheck } from "@/lib/stego/client";
+import type { ProgressStage } from "@/lib/stego/types";
+import ProgressBar from "./ProgressBar";
 
 interface DecodeModalProps {
   onClose: () => void;
@@ -19,10 +21,14 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [pendingFile, setPendingFile] = useState<Uint8Array | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [stage, setStage] = useState<ProgressStage | null>(null);
+
+  const onProgress = (s: ProgressStage) => setStage(s);
 
   async function handleFile(file: File) {
     setProcessing(true);
-    setStatus("Scanning...");
+    setStatus("");
+    setStage(null);
     setNeedsPassword(false);
     setPendingText(null);
 
@@ -30,7 +36,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
 
-      if (isEncrypted(bytes)) {
+      if (await isEncrypted(bytes)) {
         setPendingFile(bytes);
         setNeedsPassword(true);
         setStatus("This file is encrypted. Enter the password.");
@@ -38,16 +44,19 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
         return;
       }
 
-      const result = await decode(bytes);
+      const result = await decode(bytes, undefined, onProgress);
       if (!result) {
         setStatus("Nothing here. Try a different file.");
+        setStage(null);
         return;
       }
 
+      setStage("done");
       downloadResult(result.data, result.fileName);
       setStatus(`Extracted: ${result.fileName}`);
     } catch {
       setStatus("Something went wrong. Try again.");
+      setStage(null);
     } finally {
       setProcessing(false);
     }
@@ -62,9 +71,10 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
 
     setNeedsPassword(false);
     setPendingFile(null);
+    setStage(null);
 
     try {
-      if (isTextEncryptedCheck(text)) {
+      if (await isTextEncryptedCheck(text)) {
         setPendingText(text);
         setNeedsPassword(true);
         setStatus("This text is encrypted. Enter the password.");
@@ -72,13 +82,15 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
       }
 
       setProcessing(true);
-      setStatus("Decoding...");
+      setStatus("");
 
-      const result = await decodeFromText(text);
+      const result = await decodeFromText(text, undefined, onProgress);
+      setStage("done");
       downloadResult(result.data, result.fileName);
       setStatus(`Extracted: ${result.fileName}`);
     } catch {
       setStatus("Invalid text. Make sure you copied the full string.");
+      setStage(null);
     } finally {
       setProcessing(false);
     }
@@ -91,20 +103,23 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
     }
 
     setProcessing(true);
-    setStatus("Decrypting...");
+    setStatus("");
+    setStage(null);
 
     try {
       if (pendingFile) {
-        const result = await decode(pendingFile, password);
+        const result = await decode(pendingFile, password, onProgress);
         if (!result) {
           setStatus("Decryption failed. Wrong password?");
           setProcessing(false);
           return;
         }
+        setStage("done");
         downloadResult(result.data, result.fileName);
         setStatus(`Extracted: ${result.fileName}`);
       } else if (pendingText) {
-        const result = await decodeFromText(pendingText, password);
+        const result = await decodeFromText(pendingText, password, onProgress);
+        setStage("done");
         downloadResult(result.data, result.fileName);
         setStatus(`Extracted: ${result.fileName}`);
       }
@@ -115,6 +130,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
       setPassword("");
     } catch {
       setStatus("Wrong password. Try again.");
+      setStage(null);
     } finally {
       setProcessing(false);
     }
@@ -210,7 +226,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
             {/* Mode toggle */}
             <div className="flex gap-1 p-1 bg-zinc-800 rounded-lg mb-4">
               <button
-                onClick={() => { setMode("file"); setStatus(""); }}
+                onClick={() => { setMode("file"); setStatus(""); setStage(null); }}
                 className={`flex-1 text-xs py-1.5 rounded-md font-medium transition-colors ${
                   mode === "file"
                     ? "bg-zinc-700 text-white"
@@ -220,7 +236,7 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
                 GIF File
               </button>
               <button
-                onClick={() => { setMode("text"); setStatus(""); }}
+                onClick={() => { setMode("text"); setStatus(""); setStage(null); }}
                 className={`flex-1 text-xs py-1.5 rounded-md font-medium transition-colors ${
                   mode === "text"
                     ? "bg-zinc-700 text-white"
@@ -269,11 +285,12 @@ export default function DecodeModal({ onClose }: DecodeModalProps) {
           </>
         )}
 
-        {processing && mode === "file" && !needsPassword && (
-          <div className="mt-4 flex items-center justify-center gap-2">
-            <span className="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-zinc-400">{status}</span>
-          </div>
+        {(processing || stage === "done") && (
+          <ProgressBar
+            stage={stage}
+            mode="decode"
+            hasPassword={!!password || needsPassword}
+          />
         )}
 
         {!processing && status && (

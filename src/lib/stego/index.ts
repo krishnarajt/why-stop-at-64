@@ -1,6 +1,6 @@
-export type { StegoPayload } from "./types";
+export type { StegoPayload, ProgressStage, OnProgress } from "./types";
 
-import type { StegoPayload } from "./types";
+import type { StegoPayload, OnProgress } from "./types";
 import {
   serializePayload,
   deserializePayload,
@@ -11,16 +11,18 @@ import { embedInGif, extractFromGif } from "./embed";
 import { toText, fromText, isTextEncrypted } from "./textcodec";
 
 /**
- * Hide a file inside a GIF (compressed raw bytes, V2 format).
+ * Hide a file inside a GIF (zstd-compressed raw bytes, V2 format).
  * Optionally encrypt with a password.
  */
 export async function encode(
   gifBytes: Uint8Array,
   fileBytes: Uint8Array,
   fileName: string,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<Uint8Array> {
-  const payload = await serializePayload(fileName, fileBytes, password);
+  const payload = await serializePayload(fileName, fileBytes, password, onProgress);
+  onProgress?.("embedding");
   return embedInGif(gifBytes, payload);
 }
 
@@ -41,13 +43,15 @@ export function isEncrypted(gifBytes: Uint8Array): boolean {
  */
 export async function decode(
   gifBytes: Uint8Array,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<StegoPayload | null> {
+  onProgress?.("extracting");
   const extracted = extractFromGif(gifBytes);
   if (!extracted) return null;
 
   if (extracted.version === 2) {
-    return deserializePayload(extracted.payload, password);
+    return deserializePayload(extracted.payload, password, onProgress);
   }
 
   // V1 legacy
@@ -61,9 +65,10 @@ export async function decode(
 export async function encodeToText(
   fileBytes: Uint8Array,
   fileName: string,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<string> {
-  return toText(fileBytes, fileName, password);
+  return toText(fileBytes, fileName, password, onProgress);
 }
 
 /**
@@ -79,7 +84,8 @@ export function isTextEncryptedCheck(text: string): boolean {
  */
 export async function decodeFromText(
   text: string,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<StegoPayload> {
-  return fromText(text, password);
+  return fromText(text, password, onProgress);
 }

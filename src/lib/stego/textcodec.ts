@@ -1,6 +1,6 @@
 import { encode as b32encode, decode as b32decode } from "base32768";
 import { serializePayload, deserializePayload, isPayloadEncrypted } from "./format";
-import type { StegoPayload } from "./types";
+import type { StegoPayload, OnProgress } from "./types";
 
 /**
  * Encode a file into a copyable Unicode string (base32768).
@@ -9,9 +9,11 @@ import type { StegoPayload } from "./types";
 export async function toText(
   fileBytes: Uint8Array,
   fileName: string,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<string> {
-  const payload = await serializePayload(fileName, fileBytes, password);
+  const payload = await serializePayload(fileName, fileBytes, password, onProgress);
+  onProgress?.("encoding-text");
   return b32encode(payload);
 }
 
@@ -28,8 +30,9 @@ export function isTextEncrypted(text: string): boolean {
  */
 export async function fromText(
   text: string,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<StegoPayload> {
   const payload = b32decode(text);
-  return deserializePayload(payload, password);
+  return deserializePayload(payload, password, onProgress);
 }

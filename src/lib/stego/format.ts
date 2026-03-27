@@ -1,5 +1,11 @@
-import { FLAG_COMPRESSED, FLAG_ENCRYPTED, type StegoPayload } from "./types";
-import { compress, decompress } from "./compression";
+import {
+  FLAG_COMPRESSED,
+  FLAG_ENCRYPTED,
+  FLAG_ZSTD,
+  type StegoPayload,
+  type OnProgress,
+} from "./types";
+import { compress, decompress, decompressLegacy } from "./compression";
 import { encrypt, decrypt } from "./encryption";
 
 /**
@@ -14,12 +20,15 @@ import { encrypt, decrypt } from "./encryption";
 export async function serializePayload(
   fileName: string,
   fileBytes: Uint8Array,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<Uint8Array> {
-  let data = compress(fileBytes);
-  let flags = FLAG_COMPRESSED;
+  onProgress?.("compressing");
+  let data = await compress(fileBytes);
+  let flags = FLAG_ZSTD;
 
   if (password) {
+    onProgress?.("encrypting");
     data = await encrypt(data, password);
     flags |= FLAG_ENCRYPTED;
   }
@@ -54,7 +63,8 @@ export function isPayloadEncrypted(payloadBytes: Uint8Array): boolean {
 
 export async function deserializePayload(
   payloadBytes: Uint8Array,
-  password?: string
+  password?: string,
+  onProgress?: OnProgress
 ): Promise<StegoPayload> {
   const view = new DataView(
     payloadBytes.buffer,
@@ -83,11 +93,17 @@ export async function deserializePayload(
     if (!password) {
       throw new Error("PASSWORD_REQUIRED");
     }
+    onProgress?.("decrypting");
     data = new Uint8Array(await decrypt(data, password));
   }
 
-  if (flags & FLAG_COMPRESSED) {
-    data = new Uint8Array(decompress(data, originalSize));
+  if (flags & FLAG_ZSTD) {
+    onProgress?.("decompressing");
+    data = new Uint8Array(await decompress(data));
+  } else if (flags & FLAG_COMPRESSED) {
+    // Legacy DEFLATE
+    onProgress?.("decompressing");
+    data = new Uint8Array(decompressLegacy(data, originalSize));
   }
 
   return { fileName, data };
