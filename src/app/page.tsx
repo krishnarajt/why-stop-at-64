@@ -1,0 +1,46 @@
+import GifCard from "@/components/GifCard";
+import DecodeUpload from "@/components/DecodeUpload";
+
+// This will eventually hold all 64 GIFs. For now, one placeholder.
+const gifs = [
+  { src: "/gifs/placeholder.gif", name: "vibing-cat.gif" },
+];
+
+export default function Home() {
+  return (
+    <main className="flex-1">
+      {/* Header */}
+      <div className="border-b border-zinc-800 bg-zinc-950">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <h1 className="text-3xl font-bold text-white">
+            Why Stop at 64?
+          </h1>
+          <p className="text-zinc-500 mt-2">
+            The internet&apos;s finest collection of 64 GIFs. Download, share, enjoy.
+          </p>
+        </div>
+      </div>
+
+      {/* GIF Grid */}
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+          {gifs.map((gif) => (
+            <GifCard key={gif.name} src={gif.src} name={gif.name} />
+          ))}
+        </div>
+      </div>
+
+      {/* Decode / Upload Section */}
+      <div className="max-w-6xl mx-auto px-4 pb-12">
+        <DecodeUpload />
+      </div>
+
+      {/* Footer */}
+      <footer className="border-t border-zinc-800 mt-auto">
+        <div className="max-w-6xl mx-auto px-4 py-6 text-center text-zinc-600 text-sm">
+          Just vibes. Nothing to see here.
+        </div>
+      </footer>
+    </main>
+  );
+}
