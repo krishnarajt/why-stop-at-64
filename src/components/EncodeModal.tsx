@@ -19,6 +19,8 @@ export default function EncodeModal({
   const [processing, setProcessing] = useState(false);
   const [textOutput, setTextOutput] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleEncode() {
     const file = fileInputRef.current?.files?.[0];
@@ -28,7 +30,7 @@ export default function EncodeModal({
     }
 
     setProcessing(true);
-    setStatus("Compressing...");
+    setStatus(password ? "Compressing & encrypting..." : "Compressing...");
     setTextOutput("");
 
     try {
@@ -39,12 +41,13 @@ export default function EncodeModal({
 
       const gifBytes = new Uint8Array(gifBuffer);
       const fileBytes = new Uint8Array(fileBuffer);
+      const pw = password || undefined;
 
-      // Embed compressed raw bytes in GIF
-      const result = encode(gifBytes, fileBytes, file.name);
+      const [result, text] = await Promise.all([
+        encode(gifBytes, fileBytes, file.name, pw),
+        encodeToText(fileBytes, file.name, pw),
+      ]);
 
-      // Also generate copyable text
-      const text = encodeToText(fileBytes, file.name);
       setTextOutput(text);
 
       // Download the GIF
@@ -58,9 +61,10 @@ export default function EncodeModal({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      const saved = ((result.length - gifBytes.length) / fileBytes.length * 100).toFixed(0);
+      const payloadSize = result.length - gifBytes.length;
+      const ratio = ((payloadSize / fileBytes.length) * 100).toFixed(0);
       setStatus(
-        `Done. Original: ${formatSize(fileBytes.length)} → Payload: ${formatSize(result.length - gifBytes.length)} (${saved}% of original)`
+        `Done${pw ? " (encrypted)" : ""}. Original: ${formatSize(fileBytes.length)} → Payload: ${formatSize(payloadSize)} (${ratio}% of original)`
       );
     } catch {
       setStatus("Something went wrong. Try again.");
@@ -101,15 +105,49 @@ export default function EncodeModal({
         <input
           ref={fileInputRef}
           type="file"
-          className="w-full text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer mb-4"
+          className="w-full text-sm text-zinc-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-zinc-700 file:text-zinc-200 hover:file:bg-zinc-600 file:cursor-pointer mb-3"
         />
+
+        {/* Optional password */}
+        <div className="mb-4">
+          <div className="flex items-center gap-2 mb-2">
+            <label className="text-xs text-zinc-500">
+              Password (optional)
+            </label>
+            {password && (
+              <span className="text-[10px] text-emerald-400 font-medium">
+                AES-256 encryption on
+              </span>
+            )}
+          </div>
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Leave empty for no encryption"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 pr-16"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500 hover:text-zinc-300 px-1.5 py-0.5 rounded"
+            >
+              {showPassword ? "hide" : "show"}
+            </button>
+          </div>
+        </div>
 
         <button
           onClick={handleEncode}
           disabled={processing}
           className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded-lg font-medium transition-colors"
         >
-          {processing ? "Compressing..." : "Download"}
+          {processing
+            ? password
+              ? "Encrypting..."
+              : "Compressing..."
+            : "Download"}
         </button>
 
         {status && (

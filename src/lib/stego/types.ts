@@ -11,3 +11,4 @@ export const END_MARKER = new TextEncoder().encode("\x00STEG_END");
 export const MAGIC_V1 = new TextEncoder().encode("STEG_V1\x00");
 
 export const FLAG_COMPRESSED = 0x01;
+export const FLAG_ENCRYPTED = 0x02;

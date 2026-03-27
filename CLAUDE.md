@@ -18,14 +18,22 @@ A Next.js 16 App Router site that displays a curated collection of exactly 64 GI
 
 **GIF discovery is server-side**: [page.tsx](src/app/page.tsx) reads `public/gifs/` at request time (`force-dynamic`) using `fs.readdirSync`. To add/remove GIFs, just add/remove `.gif` files in that directory.
 
-**Hidden steganography feature**: Triple-clicking the top-left corner (40x40px) of any GIF card opens an encode modal. This lets users attach an arbitrary file inside a GIF by appending data after the GIF trailer byte (`0x3B`). The decode modal lets users extract hidden files from uploaded GIFs.
+**Hidden steganography feature**: Triple-clicking the top-left corner (40x40px) of any GIF card opens an encode modal. Triple-clicking "Safe & Secure" badge opens the decode modal. Pipeline: compress (DEFLATE) → optionally encrypt (AES-256-GCM) → embed raw bytes after GIF trailer (0x3B). Also generates a Base32768 text representation for sharing. Decode supports both GIF upload and pasted text, with automatic password prompting for encrypted payloads.
 
-Key modules:
-- [src/lib/stego.ts](src/lib/stego.ts) - `encode()` and `decode()` functions for GIF steganography (format: `[GIF bytes][MAGIC_HEADER][filename\0][base64 data][END_MARKER]`)
-- [src/components/GifCard.tsx](src/components/GifCard.tsx) - Client component with download + hidden triple-click to open encode modal
-- [src/components/EncodeModal.tsx](src/components/EncodeModal.tsx) - Client-side file encoding into GIF
-- [src/components/DecodeModal.tsx](src/components/DecodeModal.tsx) - Client-side file extraction from GIF
-- [src/components/DecodeUpload.tsx](src/components/DecodeUpload.tsx) - Upload interface for decoding
+Stego modules (`src/lib/stego/`):
+- [index.ts](src/lib/stego/index.ts) - Public API: `encode`, `decode`, `encodeToText`, `decodeFromText`, `isEncrypted`
+- [types.ts](src/lib/stego/types.ts) - Constants (magic bytes, flags) and `StegoPayload` type
+- [compression.ts](src/lib/stego/compression.ts) - DEFLATE level 9 via fflate
+- [encryption.ts](src/lib/stego/encryption.ts) - AES-256-GCM via Web Crypto API (PBKDF2 key derivation)
+- [embed.ts](src/lib/stego/embed.ts) - GIF binary embedding (find trailer, insert/extract)
+- [format.ts](src/lib/stego/format.ts) - V2 binary format serialization + V1 legacy fallback
+- [textcodec.ts](src/lib/stego/textcodec.ts) - Base32768 Unicode text encoding
+
+Components:
+- [GifCard.tsx](src/components/GifCard.tsx) - Client component with download + hidden triple-click to open encode modal
+- [EncodeModal.tsx](src/components/EncodeModal.tsx) - File encoding with optional password, shows Base32768 text output
+- [DecodeModal.tsx](src/components/DecodeModal.tsx) - File extraction from GIF or pasted text, password prompt for encrypted payloads
+- [DecodeUpload.tsx](src/components/DecodeUpload.tsx) - Inline upload/paste interface for decoding
 
 Styling: Tailwind CSS v4 with custom animations defined in [globals.css](src/app/globals.css). Dark theme (zinc-950 background).
 

@@ -1,20 +1,35 @@
 import { encode as b32encode, decode as b32decode } from "base32768";
-import { serializePayload, deserializePayload } from "./format";
+import { serializePayload, deserializePayload, isPayloadEncrypted } from "./format";
 import type { StegoPayload } from "./types";
 
 /**
  * Encode a file into a copyable Unicode string (base32768).
  * Uses the same compressed binary payload as the GIF embedding.
  */
-export function toText(fileBytes: Uint8Array, fileName: string): string {
-  const payload = serializePayload(fileName, fileBytes);
+export async function toText(
+  fileBytes: Uint8Array,
+  fileName: string,
+  password?: string
+): Promise<string> {
+  const payload = await serializePayload(fileName, fileBytes, password);
   return b32encode(payload);
+}
+
+/**
+ * Check if a base32768 string contains an encrypted payload.
+ */
+export function isTextEncrypted(text: string): boolean {
+  const payload = b32decode(text);
+  return isPayloadEncrypted(payload);
 }
 
 /**
  * Decode a base32768 Unicode string back to the original file.
  */
-export function fromText(text: string): StegoPayload {
+export async function fromText(
+  text: string,
+  password?: string
+): Promise<StegoPayload> {
   const payload = b32decode(text);
-  return deserializePayload(payload);
+  return deserializePayload(payload, password);
 }
